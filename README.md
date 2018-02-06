@@ -1,0 +1,3 @@
+# K-FAC: Kronecker Factored Approximate Curvature
+
+Coming soon. Stay tuned...
