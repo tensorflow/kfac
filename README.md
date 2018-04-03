@@ -69,12 +69,13 @@ layer_collection.register_categorical_predictive_distribution(logits)
 
 # Construct training ops.
 optimizer = KfacOptimizer(..., layer_collection=layer_collection)
+_, cov_update_op, _, inv_update_op, _, _ = optimizer.make_ops_and_vars()
 train_op = optimizer.minimize(loss)
 
 # Minimize loss.
 with tf.Session() as sess:
   ...
-  sess.run([train_op, optimizer.cov_update_op, optimizer.inv_update_op])
+  sess.run([train_op, cov_update_op, inv_update_op])
 ```
 
 See [`examples/`](https://github.com/tensorflow/kfac/tree/master/kfac/examples/) for runnable, end-to-end illustrations.

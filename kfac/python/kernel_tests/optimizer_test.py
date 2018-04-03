@@ -106,14 +106,6 @@ class OptimizerTest(tf.test.TestCase):
       sq_norm_update = lrate**2 * coeff**2 * sq_norm_pgrad
       self.assertAlmostEqual(0.5, sess.run(sq_norm_update), places=5)
 
-  def testComputeUpdateStepsRegular(self):
-    # TODO(olganw): implement this.
-    pass
-
-  def testComputeUpdateStepsAdam(self):
-    # TODO(olganw): implement this.
-    pass
-
   def testUpdateVelocities(self):
     with tf.Graph().as_default(), self.test_session() as sess:
       layers = lc.LayerCollection()

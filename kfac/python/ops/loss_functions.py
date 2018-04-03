@@ -310,8 +310,6 @@ class NegativeLogProbLoss(LossFunction):
     return self._evaluate(tf.stop_gradient(self.sample(seed)))
 
 
-# TODO(jamesmartens): should this just inherit from object to avoid "diamond"
-# inheritance, or is there a better way?
 class NaturalParamsNegativeLogProbLoss(NegativeLogProbLoss):
   """Base class for neg log prob losses whose inputs are 'natural' parameters.
 

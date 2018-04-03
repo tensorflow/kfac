@@ -938,7 +938,8 @@ class DepthwiseConvDiagonalFB(ConvDiagonalFB):
         dilations=rate,
         data_format=data_format)
 
-    # This is a hack to overwrite the same setting in ConvKFCBasicFB.__init__().
+    # This is a workaround to overwrite the same setting in
+    # ConvKFCBasicFB.__init__().
     filter_height, filter_width, in_channels, channel_multiplier = (
         params.shape.as_list())
     self._filter_shape = (filter_height, filter_width, in_channels,
@@ -1009,7 +1010,8 @@ class DepthwiseConvKFCBasicFB(ConvKFCBasicFB):
         data_format=data_format,
         extract_patches_fn="extract_image_patches")
 
-    # This is a hack to overwrite the same setting in ConvKFCBasicFB.__init__().
+    # This is a workaround to overwrite the same setting in
+    # ConvKFCBasicFB.__init__().
     filter_height, filter_width, in_channels, channel_multiplier = (
         params.shape.as_list())
     self._filter_shape = (filter_height, filter_width, in_channels,
