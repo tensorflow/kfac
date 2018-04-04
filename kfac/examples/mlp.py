@@ -301,7 +301,7 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
     # Run cov_update_op every step. Run 1 inv_update_ops per step.
     cov_update_op = optimizer.cov_update_op
     inv_update_op = tf.group(
-        tf.contrib.kfac.utils.batch_execute(
+        kfac.utils.batch_execute(
             global_step, optimizer.inv_update_thunks, batch_size=1))
     with tf.control_dependencies([cov_update_op, inv_update_op]):
       train_op = optimizer.minimize(loss, global_step=global_step)
