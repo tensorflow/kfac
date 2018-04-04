@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for tf.contrib.kfac.estimator."""
+"""Tests for kfac.estimator."""
 
 from __future__ import absolute_import
 from __future__ import division
