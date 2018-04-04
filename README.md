@@ -1,5 +1,7 @@
 # K-FAC: Kronecker-Factored Approximate Curvature
 
+[![Travis](https://img.shields.io/travis/tensorflow/kfac.svg)](https://travis-ci.org/tensorflow/kfac)
+
 **K-FAC in TensorFlow** is an implementation of [K-FAC][kfac-paper], an
 approximate second-order optimization method, in TensorFlow. When applied to
 feedforward and convolutional neural networks, K-FAC can converge `>3.5x`
