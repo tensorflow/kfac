@@ -32,7 +32,7 @@ in **faster training**. For an 8-layer Autoencoder, K-FAC converges to the same
 loss as SGD with Momentum in 3.8x fewer seconds and 14.7x fewer updates. See how
 training loss changes as a function of number of epochs, steps, and seconds:
 
-![autoencoder](https://github.com/tensorflow/kfac/tree/master/docs/autoencoder.png)
+![autoencoder](docs/autoencoder.png?raw=true)
 
 ## Is K-FAC for me?
 
