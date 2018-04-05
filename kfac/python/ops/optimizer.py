@@ -60,7 +60,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           the local approximation with the Fisher information matrix, and to
           regularize the update direction by making it closer to the gradient.
           If damping is adapted during training then this value is used for
-          initializing damping varaible.
+          initializing damping variable.
           (Higher damping means the update looks more like a standard gradient
           update - see Tikhonov regularization.)
       layer_collection: The layer collection object, which holds the fisher
@@ -91,7 +91,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       placement_strategy: string, Device placement strategy used when creating
         covariance variables, covariance ops, and inverse ops.
         (Default: `None`)
-      **kwargs: Arguments to be passesd to specific placement
+      **kwargs: Arguments to be passed to specific placement
         strategy mixin. Check `placement.RoundRobinPlacementMixin` for example.
 
     Raises:
@@ -113,7 +113,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     self._estimation_mode = estimation_mode
     self._colocate_gradients_with_ops = colocate_gradients_with_ops
 
-    # The below paramaters are required only if damping needs to be adapated.
+    # The below parameters are required only if damping needs to be adapted.
     # These parameters can be set by calling
     # set_damping_adaptation_params() explicitly.
     self._damping_adaptation_decay = 0.95
@@ -194,7 +194,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       min_damping: `float`(Optional), Minimum value the damping parameter
         can take. Default value 1e-5.
       damping_adaptation_decay: `float`(Optional), The `damping` parameter is
-        multipled by the `damping_adaptation_decay` every
+        multiplied by the `damping_adaptation_decay` every
         `damping_adaptation_interval` number of iterations. Default value 0.99.
       damping_adaptation_interval: `int`(Optional), Number of steps in between
         updating the `damping` parameter. Default value 5.
@@ -273,7 +273,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
   def _maybe_make_and_save_everything(self):
     if not self._fisher_est.made_vars():
-      warnings.warn("These convenience properties will be depcrecated soon. "
+      warnings.warn("These convenience properties will be deprecated soon. "
                     "Please use explicit op/thunk creation methods instead "
                     "(e.g. make_ops_and_vars, etc).",
                     DeprecationWarning)
@@ -621,7 +621,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     """Wrapper function for `self._compute_qmodel_hyperparams`.
 
     Constructs a list of preconditioned gradients and variables. Also creates a
-    op to asssign the computed q model change to `self._q_model_change`.
+    op to assign the computed q model change to `self._q_model_change`.
 
     Args:
       grads_and_vars: List of (gradient, variable) pairs.
