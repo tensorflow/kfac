@@ -208,7 +208,7 @@ class NegativeLogProbLoss(LossFunction):
 
     Here the 'Fisher' is the Fisher information matrix (i.e. expected outer-
     product of gradients) with respect to the parameters of the underlying
-    probability distribtion (whose log-prob defines the loss). Typically this
+    probability distribution (whose log-prob defines the loss). Typically this
     will be block-diagonal across different cases in the batch, since the
     distribution is usually (but not always) conditionally iid across different
     cases.
@@ -232,7 +232,7 @@ class NegativeLogProbLoss(LossFunction):
 
     Here the 'Fisher' is the Fisher information matrix (i.e. expected outer-
     product of gradients) with respect to the parameters of the underlying
-    probability distribtion (whose log-prob defines the loss). Typically this
+    probability distribution (whose log-prob defines the loss). Typically this
     will be block-diagonal across different cases in the batch, since the
     distribution is usually (but not always) conditionally iid across different
     cases.
@@ -256,7 +256,7 @@ class NegativeLogProbLoss(LossFunction):
 
     Here the 'Fisher' is the Fisher information matrix (i.e. expected outer-
     product of gradients) with respect to the parameters of the underlying
-    probability distribtion (whose log-prob defines the loss). Typically this
+    probability distribution (whose log-prob defines the loss). Typically this
     will be block-diagonal across different cases in the batch, since the
     distribution is usually (but not always) conditionally iid across different
     cases.

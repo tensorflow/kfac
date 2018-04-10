@@ -534,7 +534,7 @@ class ConvDiagonalFB(InputOutputMultiTower, FisherBlock):
     Fisher(params)[i, i] = E[ v(x, y, params) v(x, y, params)^T ][i, i]
                          = E[ v(x, y, params)[i] ^ 2 ]
 
-  Consider a convoluational layer in this model with (unshared) filter matrix
+  Consider a convolutional layer in this model with (unshared) filter matrix
   'w'. For an example image 'x' that produces layer inputs 'a' and output
   preactivations 's',
 
@@ -800,7 +800,7 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
   Estimates the Fisher Information matrix's blog for a convolutional
   layer.
 
-  Consider a convoluational layer in this model with (unshared) filter matrix
+  Consider a convolutional layer in this model with (unshared) filter matrix
   'w'. For a minibatch that produces inputs 'a' and output preactivations 's',
   this FisherBlock estimates,
 

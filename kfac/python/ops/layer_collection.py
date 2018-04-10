@@ -605,7 +605,7 @@ class LayerCollection(object):
                                outputs,
                                approx=None,
                                reuse=VARIABLE_SCOPE):
-    """Registers a fully connnected layer.
+    """Registers a fully connected layer.
 
     Args:
       params: Tensor or 2-tuple of Tensors corresponding to weight and bias of
