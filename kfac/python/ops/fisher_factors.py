@@ -49,7 +49,7 @@ EIGENVALUE_CLIPPING_THRESHOLD = 0.0
 
 # TOWER_STRATEGY can be one of "concat" or "separate".  If "concat", the data
 # passed to the factors from the blocks will be concatenated across towers
-# (lazilly via PartitionedTensor objects).  Otherwise a tuple of tensors over
+# (lazily via PartitionedTensor objects).  Otherwise a tuple of tensors over
 # towers will be passed in, and the factors will iterate over this and do the
 # cov computations separately for each one, averaging the results together.
 TOWER_STRATEGY = "concat"
@@ -1551,8 +1551,8 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
         # Might need to enforce symmetry lost due to numerical issues.
         invsqrtC0 = (invsqrtC0 + tf.transpose(invsqrtC0)) / 2.0
 
-        # The following line imposses the symmetry assumed by "Option 1" on C1.
-        # Stangely the code can work okay with this line commented out,
+        # The following line imposes the symmetry assumed by "Option 1" on C1.
+        # Strangely the code can work okay with this line commented out,
         # depending on how psd_eig is defined.  I'm not sure why.
         C1 = (C1 + tf.transpose(C1)) / 2.0
 
