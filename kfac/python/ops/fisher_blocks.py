@@ -38,7 +38,6 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
-import enum  # pylint: disable=g-bad-import-order
 
 # Dependency imports
 import numpy as np
@@ -1462,7 +1461,7 @@ class EmbeddingKFACMultiIndepFB(InputOutputMultiTowerMultiUse,
     return float(self._num_uses)
 
 
-class SeriesFBApproximation(enum.IntEnum):
+class SeriesFBApproximation(object):
   """See FullyConnectedSeriesFB.__init__ for description and usage."""
   option1 = 1
   option2 = 2
