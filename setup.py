@@ -34,7 +34,6 @@ setup(
         'kfac/examples/mlp_mnist_main.py',
     ],
     install_requires=[
-        'enum;python_version<"3.4"',
         'numpy',
         'six',
     ],
