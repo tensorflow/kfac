@@ -9,6 +9,22 @@ faster in `>14x` fewer iterations than SGD with Momentum.
 
 [kfac-paper]: https://arxiv.org/abs/1503.05671
 
+## Installation
+
+`kfac` is compatible with Python 2 and 3 and can be installed directly via
+`pip`,
+
+```shell
+# Assumes tensorflow or tensorflow-gpu installed
+$ pip install kfac
+
+# Installs with tensorflow-gpu requirement
+$ pip install 'kfac[tensorflow_gpu]'
+
+# Installs with tensorflow (cpu) requirement
+$ pip install 'kfac[tensorflow]'
+```
+
 ## What is K-FAC?
 
 K-FAC, short for "Kronecker-factored Approximate Curvature", is an approximation
