@@ -28,6 +28,8 @@ from kfac.python.ops import loss_functions
 from kfac.python.ops import op_queue
 from kfac.python.ops import optimizer
 from kfac.python.ops import utils
+from kfac.python.ops.tensormatch import graph_matcher
+from kfac.python.ops.tensormatch import graph_search
 # pylint: enable=unused-import,line-too-long
 
 # pylint: disable=invalid-name
