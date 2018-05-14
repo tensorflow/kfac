@@ -604,7 +604,9 @@ class ConvDiagonalFB(InputOutputMultiTower, FisherBlock):
 
     # Infer number of locations upon which convolution is applied.
     self._num_locations = num_conv_locations(inputs[0].shape.as_list(),
-                                             self._strides)
+                                             list(self._filter_shape),
+                                             self._strides,
+                                             self._padding)
 
     self._factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvDiagonalFactor,
@@ -861,7 +863,9 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
   def instantiate_factors(self, grads_list, damping):
     # Infer number of locations upon which convolution is applied.
     self._num_locations = num_conv_locations(self._inputs[0].shape.as_list(),
-                                             self._strides)
+                                             list(self._filter_shape),
+                                             self._strides,
+                                             self._padding)
 
     inputs, grads_list = self._process_data(grads_list)
 
@@ -1116,26 +1120,32 @@ def maybe_tuple(obj):
   return tuple(obj)
 
 
-def num_conv_locations(input_shape, strides):
+def num_conv_locations(input_shape, filter_shape, strides, padding):
   """Returns the number of spatial locations a 2D Conv kernel is applied to.
 
   Args:
     input_shape: List of ints representing shape of inputs to
       tf.nn.convolution().
+    filter_shape: List of ints representing shape of filter to
+      tf.nn.convolution().
     strides: List of ints representing strides along spatial dimensions as
       passed in to tf.nn.convolution().
+    padding: string.
 
   Returns:
     A scalar |T| denoting the number of spatial locations for the Conv layer.
   """
-  spatial_input_locations = np.prod(input_shape[1:-1])
-
   if strides is None:
-    spatial_strides_divisor = 1
-  else:
-    spatial_strides_divisor = np.prod(strides)
+    strides = [1, 1, 1, 1]
 
-  return spatial_input_locations // spatial_strides_divisor
+  if padding is not None and padding.lower() == "valid":
+    out_height = -(-(input_shape[1] - filter_shape[0] + 1) // strides[1])
+    out_width = -(-(input_shape[2] - filter_shape[1] + 1) // strides[2])
+  else:
+    out_height = -(-input_shape[1] // strides[1])
+    out_width = -(-input_shape[2] // strides[2])
+
+  return out_height * out_width
 
 
 class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
@@ -1390,7 +1400,9 @@ class ConvKFCBasicMultiIndepFB(InputOutputMultiTowerMultiUse,
 
     # Infer number of locations upon which convolution is applied.
     self._num_locations = num_conv_locations(inputs.shape.as_list(),
-                                             self._strides)
+                                             list(self._filter_shape),
+                                             self._strides,
+                                             self._padding)
 
     self._input_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvInputKroneckerFactor,
