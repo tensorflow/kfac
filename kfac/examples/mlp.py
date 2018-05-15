@@ -128,6 +128,15 @@ def minimize(loss, accuracy, layer_collection, session_config=None):
       damping=0.0001,
       layer_collection=layer_collection,
       momentum=0.99)
+  (cov_update_thunks,
+   inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
+
+  def make_update_op(update_thunks):
+    update_ops = [thunk() for thunk in update_thunks]
+    return tf.group(*update_ops)
+
+  cov_update_op = make_update_op(cov_update_thunks)
+  inv_update_op = make_update_op(inv_update_thunks)
   train_op = optimizer.minimize(loss, global_step=global_step)
 
   tf.logging.info("Starting training.")
@@ -142,10 +151,10 @@ def minimize(loss, accuracy, layer_collection, session_config=None):
       # The first 2 of these are cheap and should be done with each step. The
       # latter is more expensive, and should be updated ~100 iterations.
       global_step_, loss_, accuracy_, _, _ = sess.run(
-          [global_step, loss, accuracy, train_op, optimizer.cov_update_op])
+          [global_step, loss, accuracy, train_op, cov_update_op])
 
       if global_step_ % 100 == 0:
-        sess.run(optimizer.inv_update_op)
+        sess.run(inv_update_op)
 
       if global_step_ % 100 == 0:
         tf.logging.info("global_step: %d | loss: %f | accuracy: %f",
@@ -294,17 +303,30 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
         learning_rate=tf.train.exponential_decay(
             0.00002, global_step, 10000, 0.5, staircase=True),
         cov_ema_decay=0.95,
-        damping=0.0001,
+        damping=0.01,
         layer_collection=layer_collection,
         momentum=0.99)
 
+    (cov_update_thunks,
+     inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
+
+    def make_update_op(update_thunks):
+      update_ops = [thunk() for thunk in update_thunks]
+      return tf.group(*update_ops)
+
+    def make_batch_executed_op(update_thunks, batch_size=1):
+      return tf.group(*kfac.utils.batch_execute(
+          global_step, update_thunks, batch_size=batch_size))
+
     # Run cov_update_op every step. Run 1 inv_update_ops per step.
-    cov_update_op = optimizer.cov_update_op
-    inv_update_op = tf.group(
-        kfac.utils.batch_execute(
-            global_step, optimizer.inv_update_thunks, batch_size=1))
-    with tf.control_dependencies([cov_update_op, inv_update_op]):
-      train_op = optimizer.minimize(loss, global_step=global_step)
+    cov_update_op = make_update_op(cov_update_thunks)
+    with tf.control_dependencies([cov_update_op]):
+      # But make sure to execute all the inverse ops on the first step
+      inverse_op = tf.cond(tf.equal(global_step, 0),
+                           lambda: make_update_op(inv_update_thunks),
+                           lambda: make_batch_executed_op(inv_update_thunks))
+      with tf.control_dependencies([inverse_op]):
+        train_op = optimizer.minimize(loss, global_step=global_step)
 
     # Print metrics every 5 sec.
     hooks = [
