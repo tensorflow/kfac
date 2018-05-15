@@ -51,6 +51,9 @@ __all__ = [
     "train_mnist_distributed",
 ]
 
+# Inverse update ops will be run every _INVERT_EVRY iterations.
+_INVERT_EVERY = 10
+
 
 def conv_layer(layer_id, inputs, kernel_size, out_channels):
   """Builds a convolutional layer with ReLU non-linearity.
@@ -179,41 +182,59 @@ def build_model(examples, labels, num_labels, layer_collection):
 def minimize_loss_single_machine(loss,
                                  accuracy,
                                  layer_collection,
+                                 device="/cpu:0",
                                  session_config=None):
   """Minimize loss with K-FAC on a single machine.
 
-  A single Session is responsible for running all of K-FAC's ops.
+  A single Session is responsible for running all of K-FAC's ops. The covariance
+  and inverse update ops are placed on `device`. All model variables are on CPU.
 
   Args:
     loss: 0-D Tensor. Loss to be minimized.
     accuracy: 0-D Tensor. Accuracy of classifier on current minibatch.
     layer_collection: LayerCollection instance describing model architecture.
       Used by K-FAC to construct preconditioner.
+    device: string, Either '/cpu:0' or '/gpu:0'. The covaraince and invserse
+      update ops are run on this device.
     session_config: None or tf.ConfigProto. Configuration for tf.Session().
 
   Returns:
     final value for 'accuracy'.
   """
   # Train with K-FAC.
-  global_step = tf.train.get_or_create_global_step()
+  g_step = tf.train.get_or_create_global_step()
   optimizer = kfac.KfacOptimizer(
       learning_rate=0.0001,
       cov_ema_decay=0.95,
       damping=0.001,
       layer_collection=layer_collection,
+      placement_strategy="round_robin",
+      cov_devices=[device],
+      inv_devices=[device],
       momentum=0.9)
-  train_op = optimizer.minimize(loss, global_step=global_step)
+  (cov_update_thunks,
+   inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
+
+  def make_update_op(update_thunks):
+    update_ops = [thunk() for thunk in update_thunks]
+    return tf.group(*update_ops)
+
+  cov_update_op = make_update_op(cov_update_thunks)
+  with tf.control_dependencies([cov_update_op]):
+    inverse_op = tf.cond(
+        tf.equal(tf.mod(g_step, _INVERT_EVERY), 0),
+        lambda: make_update_op(inv_update_thunks), tf.no_op)
+    with tf.control_dependencies([inverse_op]):
+      with tf.device(device):
+        train_op = optimizer.minimize(loss, global_step=g_step)
 
   tf.logging.info("Starting training.")
   with tf.train.MonitoredTrainingSession(config=session_config) as sess:
     while not sess.should_stop():
-      global_step_, loss_, accuracy_, _, _ = sess.run(
-          [global_step, loss, accuracy, train_op, optimizer.cov_update_op])
+      global_step_, loss_, accuracy_, _ = sess.run(
+          [g_step, loss, accuracy, train_op])
 
-      if global_step_ % 100 == 0:
-        sess.run(optimizer.inv_update_op)
-
-      if global_step_ % 100 == 0:
+      if global_step_ % _INVERT_EVERY == 0:
         tf.logging.info("global_step: %d | loss: %f | accuracy: %s",
                         global_step_, loss_, accuracy_)
 
@@ -284,7 +305,16 @@ def minimize_loss_distributed(task_id, num_worker_tasks, num_ps_tasks, master,
         damping=0.001,
         layer_collection=layer_collection,
         momentum=0.9)
-    inv_update_queue = kfac.op_queue.OpQueue(optimizer.inv_update_ops)
+    (cov_update_thunks,
+     inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
+
+    def make_update_op(update_thunks):
+      update_ops = [thunk() for thunk in update_thunks]
+      return tf.group(*update_ops)
+
+    cov_update_op = make_update_op(cov_update_thunks)
+    inv_update_ops = [thunk() for thunk in inv_update_thunks]
+    inv_update_queue = kfac.op_queue.OpQueue(inv_update_ops)
     sync_optimizer = tf.train.SyncReplicasOptimizer(
         opt=optimizer,
         replicas_to_aggregate=_num_gradient_tasks(num_worker_tasks))
@@ -304,7 +334,7 @@ def minimize_loss_distributed(task_id, num_worker_tasks, num_ps_tasks, master,
       if _is_gradient_task(task_id, num_worker_tasks):
         learning_op = train_op
       elif _is_cov_update_task(task_id, num_worker_tasks):
-        learning_op = optimizer.cov_update_op
+        learning_op = cov_update_op
       elif _is_inv_update_task(task_id, num_worker_tasks):
         # TODO(duckworthd): Running this op before cov_update_op has been run a
         # few times can result in "InvalidArgumentError: Cholesky decomposition
