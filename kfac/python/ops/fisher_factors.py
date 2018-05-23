@@ -385,7 +385,7 @@ class FisherFactor(object):
   def instantiate_cov_variables(self):
     """Makes the internal cov variable(s)."""
     assert self._cov is None
-    with tf.variable_scope(self._var_scope):
+    with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
       self._cov = tf.get_variable(
           "cov",
           initializer=self._cov_initializer,
@@ -592,7 +592,7 @@ class DenseSquareMatrixFactor(FisherFactor):
       exp_string = scalar_or_tensor_to_string(exp)
       damping_func = self._damping_funcs_by_id[damping_id]
       damping_string = graph_func_to_string(damping_func)
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         matpower = tf.get_variable(
             "matpower_exp{}_damp{}".format(exp_string, damping_string),
             initializer=inverse_initializer,
@@ -605,7 +605,7 @@ class DenseSquareMatrixFactor(FisherFactor):
     for damping_id in self._cholesky_registrations:
       damping_func = self._damping_funcs_by_id[damping_id]
       damping_string = graph_func_to_string(damping_func)
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         chol = tf.get_variable(
             "cholesky_damp{}".format(damping_string),
             initializer=inverse_initializer,
@@ -618,7 +618,7 @@ class DenseSquareMatrixFactor(FisherFactor):
     for damping_id in self._cholesky_inverse_registrations:
       damping_func = self._damping_funcs_by_id[damping_id]
       damping_string = graph_func_to_string(damping_func)
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         cholinv = tf.get_variable(
             "cholesky_inverse_damp{}".format(damping_string),
             initializer=inverse_initializer,
@@ -1633,7 +1633,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     super(FullyConnectedMultiKF, self).instantiate_cov_variables()
     assert self._cov_dt1 is None
     if self._make_cov_dt1:
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         self._cov_dt1 = tf.get_variable(
             "cov_dt1",
             initializer=tf.zeros_initializer,
@@ -1660,7 +1660,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       # It's questionable as to whether we should initialize with stuff like
       # this at all.  Ideally these values should never be used until they are
       # updated at least once.
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         Lmat = tf.get_variable(  # pylint: disable=invalid-name
             "Lmat_damp{}".format(damping_string),
             initializer=inverse_initializer,
@@ -1683,7 +1683,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       # It's questionable as to whether we should initialize with stuff like
       # this at all.  Ideally these values should never be used until they are
       # updated at least once.
-      with tf.variable_scope(self._var_scope):
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
         Pmat = tf.get_variable(  # pylint: disable=invalid-name
             "Lmat_damp{}".format(damping_string),
             initializer=inverse_initializer,
