@@ -19,10 +19,10 @@ from __future__ import division
 from __future__ import print_function
 
 # Dependency imports
+import kfac
 import numpy as np
 import tensorflow as tf
 
-import kfac
 from kfac.examples import convnet
 
 
@@ -67,7 +67,7 @@ class ConvNetTest(tf.test.TestCase):
     with tf.Graph().as_default():
       x = tf.placeholder(tf.float32, [None, 6, 6, 3])
       y = tf.placeholder(tf.int64, [None])
-      layer_collection = tensorflow_kfac.LayerCollection()
+      layer_collection = kfac.LayerCollection()
       loss, accuracy = convnet.build_model(
           x, y, num_labels=5, layer_collection=layer_collection)
 
@@ -104,7 +104,7 @@ class ConvNetTest(tf.test.TestCase):
     loss = tf.reduce_mean(0.5 * tf.square(y_hat - y))
     accuracy = loss
 
-    layer_collection = tensorflow_kfac.LayerCollection()
+    layer_collection = kfac.LayerCollection()
     layer_collection.register_fully_connected(params=w, inputs=x, outputs=y_hat)
     layer_collection.register_normal_predictive_distribution(y_hat)
 

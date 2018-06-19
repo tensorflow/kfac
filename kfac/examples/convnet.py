@@ -32,16 +32,11 @@ from __future__ import print_function
 
 import os
 # Dependency imports
+import kfac
 import numpy as np
 import tensorflow as tf
 
-import kfac
-from kfac import graph_search
-from kfac import periodic_inv_cov_update_kfac_opt
 from kfac.examples import mnist
-
-oq = tensorflow_kfac.op_queue
-kfac_optimizer = tensorflow_kfac.KfacOptimizer
 
 __all__ = [
     "conv_layer",
@@ -230,7 +225,7 @@ def build_model(examples,
                                        pre2)
       layer_collection.register_fully_connected(params4, flat_act3, logits)
     else:
-      graph_search.register_layers(layer_collection, tf.trainable_variables())
+      kfac.graph_search.register_layers(layer_collection, tf.trainable_variables())
 
   return loss, accuracy
 
@@ -261,7 +256,7 @@ def minimize_loss_single_machine(loss,
   """
   # Train with K-FAC.
   g_step = tf.train.get_or_create_global_step()
-  optimizer = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt(
+  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=_INVERT_EVERY,
       cov_update_every=_COV_UPDATE_EVERY,
       learning_rate=0.0001,
@@ -316,7 +311,7 @@ def minimize_loss_single_machine_manual(loss,
   """
   # Train with K-FAC.
   g_step = tf.train.get_or_create_global_step()
-  optimizer = kfac_optimizer(
+  optimizer = kfac.KfacOptimizer(
       learning_rate=0.0001,
       cov_ema_decay=0.95,
       damping=0.001,
@@ -404,13 +399,13 @@ def _make_distributed_train_op(
   Returns:
     sync_optimizer: `tf.train.SyncReplicasOptimizer` instance which wraps KFAC
       optimizer.
-    optimizer: Instance of `kfac_optimizer`.
+    optimizer: Instance of `KfacOptimizer`.
     global_step: `tensor`, Global step.
   """
   tf.logging.info("Task id : %d", task_id)
   with tf.device(tf.train.replica_device_setter(num_ps_tasks)):
     global_step = tf.train.get_or_create_global_step()
-    optimizer = kfac_optimizer(
+    optimizer = kfac.KfacOptimizer(
         learning_rate=0.0001,
         cov_ema_decay=0.95,
         damping=0.001,
@@ -531,7 +526,7 @@ def distributed_grads_and_ops_dedicated_workers(
       task_id, num_worker_tasks, num_ps_tasks, layer_collection)
   _, cov_update_op, inv_update_ops, _, _, _ = optimizer.make_ops_and_vars()
   train_op = sync_optimizer.minimize(loss, global_step=global_step)
-  inv_update_queue = oq.OpQueue(inv_update_ops)
+  inv_update_queue = kfac.op_queue.OpQueue(inv_update_ops)
 
   tf.logging.info("Starting training.")
   is_chief = (task_id == 0)
@@ -593,7 +588,7 @@ def train_mnist_single_machine(data_dir,
       flatten_images=False)
 
   # Build a ConvNet.
-  layer_collection = tensorflow_kfac.LayerCollection()
+  layer_collection = kfac.LayerCollection()
   loss, accuracy = build_model(
       examples, labels, num_labels=10, layer_collection=layer_collection)
 
@@ -652,7 +647,7 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
   labels = tf.split(labels, num_towers)
 
   # Build an MLP. Each tower's layers will be added to the LayerCollection.
-  layer_collection = tensorflow_kfac.LayerCollection()
+  layer_collection = kfac.LayerCollection()
   tower_results = []
   for tower_id in range(num_towers):
     with tf.device(devices[tower_id]):
@@ -680,7 +675,7 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
   )
 
   g_step = tf.train.get_or_create_global_step()
-  optimizer = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt(
+  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=_INVERT_EVERY,
       cov_update_every=_COV_UPDATE_EVERY,
       learning_rate=0.0001,
@@ -747,7 +742,7 @@ def train_mnist_distributed_sync_replicas(task_id,
       flatten_images=False)
 
   # Build a ConvNet.
-  layer_collection = tensorflow_kfac.LayerCollection()
+  layer_collection = kfac.LayerCollection()
   with tf.device(tf.train.replica_device_setter(num_ps_tasks)):
     loss, accuracy = build_model(
         examples, labels, num_labels=10, layer_collection=layer_collection)
@@ -810,13 +805,13 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
       raise ValueError("Only training is supposed with this API.")
 
     # Build a ConvNet.
-    layer_collection = tensorflow_kfac.LayerCollection()
+    layer_collection = kfac.LayerCollection()
     loss, accuracy = build_model(
         features, labels, num_labels=10, layer_collection=layer_collection)
 
     # Train with K-FAC.
     global_step = tf.train.get_or_create_global_step()
-    optimizer = kfac_optimizer(
+    optimizer = kfac.KfacOptimizer(
         learning_rate=tf.train.exponential_decay(
             0.00002, global_step, 10000, 0.5, staircase=True),
         cov_ema_decay=0.95,

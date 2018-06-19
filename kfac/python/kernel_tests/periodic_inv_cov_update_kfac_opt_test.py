@@ -20,11 +20,11 @@ from __future__ import print_function
 
 # Dependency imports
 import sonnet as snt
-import tensorflow.google as tf
+import tensorflow as tf
 
-import kfac
-from kfac import graph_search
-from kfac import periodic_inv_cov_update_kfac_opt
+from kfac.python.ops import layer_collection
+from kfac.python.ops.tensormatch import graph_search
+from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
 
 _BATCH_SIZE = 128
 
@@ -53,7 +53,7 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
     all_losses = tf.nn.softmax_cross_entropy_with_logits_v2(
         logits=logits, labels=labels_one_hot)
     loss = tf.reduce_mean(all_losses)
-    layers = tensorflow_kfac.LayerCollection()
+    layers = layer_collection.LayerCollection()
     optimizer = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt(
         invert_every=10,
         cov_update_every=1,

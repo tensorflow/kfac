@@ -32,9 +32,10 @@ from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
 from kfac.python.ops.tensormatch import graph_matcher
 from kfac.python.ops.tensormatch import graph_search
 
-# pylint: enable=unused-import,line-too-long
+# pylint: enable=unused-import
 
 # pylint: disable=invalid-name
 LayerCollection = layer_collection.LayerCollection
 KfacOptimizer = optimizer.KfacOptimizer
-# pylint: enable=invalid-name
+PeriodicInvCovUpdateKfacOpt = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt
+# pylint: enable=invalid-name,line-too-long
