@@ -38,6 +38,7 @@ from tensorflow.python.util import nest
 from kfac.python.ops import fisher_blocks as fb
 from kfac.python.ops import loss_functions as lf
 from kfac.python.ops import utils
+from kfac.python.ops.tensormatch import graph_search
 
 # Names for various approximations that can be requested for Fisher blocks.
 APPROX_KRONECKER_NAME = "kron"
@@ -285,6 +286,12 @@ class LayerCollection(object):
   @property
   def default_embedding_multi_approximation(self):
     return self._default_embedding_multi_approximation
+
+  def auto_register_layers(self, var_list=None, **kwargs):
+    """Registers all layers automatically."""
+    if var_list is None:
+      var_list = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    graph_search.register_layers(self, var_list, **kwargs)
 
   def register_block(self, layer_key, fisher_block, reuse=VARIABLE_SCOPE):
     """Validates and registers the layer_key associated with the fisher_block.

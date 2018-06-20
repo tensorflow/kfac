@@ -20,11 +20,11 @@ from __future__ import print_function
 
 # Dependency imports
 import sonnet as snt
-import tensorflow as tf
+import tensorflow.google as tf
 
 from kfac.python.ops import layer_collection
-from kfac.python.ops.tensormatch import graph_search
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
+from kfac.python.ops.tensormatch import graph_search
 
 _BATCH_SIZE = 128
 
@@ -45,7 +45,6 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
   def test_train(self):
     image = tf.random_uniform(shape=(_BATCH_SIZE, 784), maxval=1.)
     labels = tf.random_uniform(shape=(_BATCH_SIZE,), maxval=10, dtype=tf.int32)
-    labels = tf.Print(labels, [labels], "labels", summarize=100)
     labels_one_hot = tf.one_hot(labels, 10)
 
     model = snt.Sequential([snt.BatchFlatten(), snt.nets.MLP([128, 128, 10])])
@@ -59,7 +58,7 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
         cov_update_every=1,
         learning_rate=0.03,
         cov_ema_decay=0.95,
-        damping=0.01,
+        damping=100.,
         layer_collection=layers,
         momentum=0.9,
         placement_strategy="round_robin")
