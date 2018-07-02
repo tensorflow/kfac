@@ -152,7 +152,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           variables=self._variables,
           cov_ema_decay=self._cov_ema_decay,
           damping=self.damping,
-          layer_collection=self._layers,
+          layer_collection=lambda: self.layers,
           exps=(-1,),
           estimation_mode=self._estimation_mode,
           colocate_gradients_with_ops=self._colocate_gradients_with_ops,
@@ -219,9 +219,21 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       self._damping = tf.get_variable(
           "damping", initializer=self._damping_constant, trainable=False)
 
+  def get_cov_vars(self):
+    """Returns all covaraiance varaiables."""
+    return self._fisher_est.get_cov_vars()
+
+  def get_inv_vars(self):
+    """Returns all inverse computation related varaiables."""
+    return self._fisher_est.get_inv_vars()
+
   @property
   def variables(self):
     return self._fisher_est.variables
+
+  @property
+  def layers(self):
+    return self._layers
 
   @property
   def damping(self):
@@ -295,19 +307,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           return tf.group(loss_assign_op, train_op)
       else:
         return super(KfacOptimizer, self).minimize(*args, **kwargs)
-
-  def compute_gradients(self, *args, **kwargs):
-    # args[1] could be our var_list
-    if len(args) > 1:
-      var_list = args[1]
-    else:
-      kwargs["var_list"] = kwargs.get("var_list") or self.variables
-      var_list = kwargs["var_list"]
-
-    if set(var_list) != set(self.variables):
-      raise ValueError("var_list doesn't match with set of Fisher-estimating "
-                       "variables.")
-    return super(KfacOptimizer, self).compute_gradients(*args, **kwargs)
 
   def apply_gradients(self, grads_and_vars, *args, **kwargs):
     """Applies gradients to variables.
@@ -468,7 +467,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                     = qmodel(alpha*precon_grad + mu*prev_update) - L(theta).
     """
 
-    cmvpc = cmvp.CurvatureMatrixVectorProductComputer(self._layers.losses,
+    cmvpc = cmvp.CurvatureMatrixVectorProductComputer(self.layers.losses,
                                                       variables)
 
     # compute the matrix-vector products with the transposed Fisher factor

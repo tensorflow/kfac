@@ -97,8 +97,9 @@ class FisherEstimator(object):
           and to regularize the update direction by making it closer to the
           gradient. (Higher damping means the update looks more like a standard
           gradient update - see Tikhonov regularization.)
-      layer_collection: The layer collection object, which holds the fisher
-          blocks, kronecker factors, and losses associated with the
+      layer_collection: Either layer collection object or a function which
+          returns an instance to `LayerCollection` object, which holds the
+          Fisher blocks, kronecker factors, and losses associated with the
           graph.
       exps: List of floats or ints. These represent the different matrix
           powers of the approximate Fisher that the FisherEstimator will be able
@@ -139,7 +140,7 @@ class FisherEstimator(object):
     self._cov_ema_decay = cov_ema_decay
     self._damping = damping
     self._estimation_mode = estimation_mode
-    self._layers = layer_collection
+    self._layer_collection = layer_collection
     self._gradient_fns = {
         "gradients": self._get_grads_lists_gradients,
         "empirical": self._get_grads_lists_empirical,
@@ -148,7 +149,6 @@ class FisherEstimator(object):
     }
     self._colocate_gradients_with_ops = colocate_gradients_with_ops
 
-    self._made_vars = False
     self._exps = exps
     self._compute_cholesky = compute_cholesky
     self._compute_cholesky_inverse = compute_cholesky_inverse
@@ -169,16 +169,23 @@ class FisherEstimator(object):
   @property
   def blocks(self):
     """All registered FisherBlocks."""
-    return self._layers.get_blocks()
+    return self.layers.get_blocks()
 
   @property
   def factors(self):
     """All registered FisherFactors."""
-    return self._layers.get_factors()
+    return self.layers.get_factors()
 
   @property
   def name(self):
     return self._name
+
+  @property
+  def layers(self):
+    if callable(self._layer_collection):
+      return self._layer_collection()
+    else:
+      return self._layer_collection
 
   @abc.abstractmethod
   def make_vars_and_create_op_thunks(self, scope=None):
@@ -231,7 +238,7 @@ class FisherEstimator(object):
 
     trans_vecs = utils.SequenceDict()
 
-    for params, fb in self._layers.fisher_blocks.items():
+    for params, fb in self.layers.fisher_blocks.items():
       trans_vecs[params] = transform(fb, vecs[params])
 
     return [(trans_vecs[var], var) for _, var in vecs_and_vars]
@@ -337,14 +344,6 @@ class FisherEstimator(object):
     for grads_list, block in zip(grads_lists, blocks):
       block.instantiate_factors(grads_list, self.damping)
 
-  def _check_vars_unmade_and_set_made_flag(self):
-    if self._made_vars:
-      raise Exception("Already made variables.")
-    self._made_vars = True
-
-  def made_vars(self):
-    return self._made_vars
-
   def _register_matrix_functions(self):
     for block in self.blocks:
       for exp in self._exps:
@@ -355,8 +354,8 @@ class FisherEstimator(object):
         block.register_cholesky_inverse()
 
   def _finalize_layer_collection(self):
-    self._layers.create_subgraph()
-    self._layers.check_registration(self.variables)
+    self.layers.create_subgraph()
+    self.layers.check_registration(self.variables)
     self._instantiate_factors()
     self._register_matrix_functions()
 
@@ -388,7 +387,6 @@ class FisherEstimator(object):
       inv_variable_thunks: A list of thunks that make the inv variables.
       inv_update_thunks: A list of thunks that make the inv update ops.
     """
-    self._check_vars_unmade_and_set_made_flag()
 
     self._finalize_layer_collection()
 
@@ -411,6 +409,29 @@ class FisherEstimator(object):
 
     return (cov_variable_thunks, cov_update_thunks,
             inv_variable_thunks, inv_update_thunks)
+
+  def get_cov_vars(self):
+    """Returns all covariance variables associated with each Fisher factor.
+
+    Note the returned list also includes additional factor specific covaraince
+    variables.
+    """
+    cov_vars = []
+    for factor in self.factors:
+      cov_vars.extend(factor.get_cov_vars())
+    return cov_vars
+
+  def get_inv_vars(self):
+    """Returns all covariance variables associated with each Fisher factor.
+
+    Note the returned list also includes additional factor specific covaraince
+    variables.
+
+    Returns: List of list. The number of inner lists is equal to number of
+      factors. And each inner list contains all inverse computation related
+      variables for that factor.
+    """
+    return tuple(factor.get_inv_vars() for factor in self.factors)
 
   def _create_cov_variable_thunk(self, factor, scope):
     """Constructs a covariance variable thunk for a single FisherFactor."""
@@ -452,7 +473,7 @@ class FisherEstimator(object):
     # Passing in a list of loss values is better than passing in the sum as
     # the latter creates unnessesary ops on the default device
     grads_flat = tf.gradients(
-        self._layers.eval_losses_on_samples(),
+        self.layers.eval_losses_on_samples(),
         nest.flatten(tensors),
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
@@ -462,7 +483,7 @@ class FisherEstimator(object):
     # Passing in a list of loss values is better than passing in the sum as
     # the latter creates unnessesary ops on the default device
     grads_flat = tf.gradients(
-        self._layers.eval_losses(),
+        self.layers.eval_losses(),
         nest.flatten(tensors),
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
@@ -470,15 +491,15 @@ class FisherEstimator(object):
 
   def _get_transformed_random_signs(self):
     transformed_random_signs = []
-    for loss in self._layers.losses:
-      with tf.colocate_with(self._layers.loss_colocation_ops[loss]):
+    for loss in self.layers.losses:
+      with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
         transformed_random_signs.append(
             loss.multiply_fisher_factor(
                 utils.generate_random_signs(loss.fisher_factor_inner_shape)))
     return transformed_random_signs
 
   def _get_grads_lists_curvature_prop(self, tensors):
-    loss_inputs = list(loss.inputs for loss in self._layers.losses)
+    loss_inputs = list(loss.inputs for loss in self.layers.losses)
     transformed_random_signs = self._get_transformed_random_signs()
     grads_flat = tf.gradients(
         nest.flatten(loss_inputs),
@@ -492,8 +513,8 @@ class FisherEstimator(object):
     """No docstring required."""
     # Loop over all coordinates of all losses.
     grads_all = []
-    for loss in self._layers.losses:
-      with tf.colocate_with(self._layers.loss_colocation_ops[loss]):
+    for loss in self.layers.losses:
+      with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
         for index in np.ndindex(*loss.fisher_factor_inner_static_shape[1:]):
           transformed_one_hot = loss.multiply_fisher_factor_replicated_one_hot(
               index)

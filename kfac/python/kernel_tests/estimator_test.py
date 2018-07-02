@@ -158,7 +158,7 @@ class EstimatorTest(tf.test.TestCase):
       for thunk in cov_variable_thunks:
         thunk()
       cov_matrices = [
-          fisher_factor.get_cov()
+          fisher_factor.cov
           for fisher_factor in self.layer_collection.get_factors()
       ]
       cov_update_op = tf.case([(tf.equal(global_step, i), thunk)
@@ -213,7 +213,7 @@ class EstimatorTest(tf.test.TestCase):
       self.assertEqual(inv_update_ops[0].device, "/device:CPU:0")
       self.assertEqual(inv_update_ops[1].device, "/device:CPU:1")
       cov_matrices = [
-          fisher_factor.get_cov()
+          fisher_factor.cov
           for fisher_factor in self.layer_collection.get_factors()
       ]
       inv_matrices = [
@@ -267,7 +267,7 @@ class EstimatorTest(tf.test.TestCase):
       # ensures that the inverse matrices are updated to something different as
       # well.
       cov_matrices = [
-          fisher_factor.get_cov()
+          fisher_factor.cov
           for fisher_factor in self.layer_collection.get_factors()
       ]
       sess.run([
