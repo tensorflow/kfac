@@ -20,7 +20,7 @@ from __future__ import print_function
 
 # Dependency imports
 import sonnet as snt
-import tensorflow.google as tf
+import tensorflow as tf
 
 from kfac.python.ops import layer_collection
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
