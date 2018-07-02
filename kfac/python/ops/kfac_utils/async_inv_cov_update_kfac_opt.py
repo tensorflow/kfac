@@ -19,7 +19,6 @@ from __future__ import division
 from __future__ import print_function
 
 import threading
-# Dependency imports
 import tensorflow as tf
 
 from kfac.python.ops import optimizer
