@@ -471,9 +471,10 @@ def register_records(layer_collection,
     if batch_size:
       # If the batch/time dimension is merged in the input then need to set
       # `num_uses`.
-      is_batch_time_folded = (
-          record_list[0].data['inputs'].shape.as_list()[0] != batch_size)
-      num_uses = record_list[0].data['inputs'].shape.as_list()[0] // batch_size
+      first_dim = record_list[0].data['inputs'].shape.as_list()[0]
+      is_batch_time_folded = not (first_dim is None or first_dim == batch_size)
+      if is_batch_time_folded:
+        num_uses = first_dim // batch_size
 
     if record_type is RecordType.fully_connected:
       if len(record_list) > 1:

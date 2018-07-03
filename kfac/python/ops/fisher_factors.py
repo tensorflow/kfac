@@ -20,7 +20,6 @@ from __future__ import print_function
 
 import abc
 import contextlib
-
 # Dependency imports
 import numpy as np
 import six
@@ -76,6 +75,11 @@ _SUB_SAMPLE_INPUTS = False
 TOWER_STRATEGY = "concat"
 
 
+# The variable scope names can be edited by passing a custom sanitizer function.
+# By default the scope name is unchanged.
+_GET_SANITIZED_NAME_FN = lambda x: x
+
+
 def set_global_constants(init_covariances_at_zero=None,
                          zero_debias=None,
                          init_inverses_at_zero=None,
@@ -85,7 +89,8 @@ def set_global_constants(init_covariances_at_zero=None,
                          sub_sample_outer_products=None,
                          inputs_to_extract_patches_factor=None,
                          sub_sample_inputs=None,
-                         tower_strategy=None):
+                         tower_strategy=None,
+                         get_sanitized_name_fn=None):
   """Sets various global constants used by the classes in this module."""
   global INIT_COVARIANCES_AT_ZERO
   global ZERO_DEBIAS
@@ -96,6 +101,7 @@ def set_global_constants(init_covariances_at_zero=None,
   global _SUB_SAMPLE_OUTER_PRODUCTS
   global _INPUTS_TO_EXTRACT_PATCHES_FACTOR
   global _SUB_SAMPLE_INPUTS
+  global _GET_SANITIZED_NAME_FN
   global TOWER_STRATEGY
 
   if init_covariances_at_zero is not None:
@@ -118,6 +124,8 @@ def set_global_constants(init_covariances_at_zero=None,
     _SUB_SAMPLE_INPUTS = sub_sample_inputs
   if tower_strategy is not None:
     TOWER_STRATEGY = tower_strategy
+  if get_sanitized_name_fn is not None:
+    _GET_SANITIZED_NAME_FN = get_sanitized_name_fn
 
 
 def inverse_initializer(shape, dtype, partition_info=None):  # pylint: disable=unused-argument
@@ -238,8 +246,9 @@ def scope_string_from_params(params):
 def scope_string_from_name(tensor):
   if isinstance(tensor, (tuple, list)):
     return "__".join([scope_string_from_name(t) for t in tensor])
-  # "gradients/add_4_grad/Reshape:0" -> "gradients_add_4_grad_Reshape"
-  return tensor.name.split(":")[0].replace("/", "_")
+  # "gradients/add_4_grad/Reshape:0/replica_0" -> "gradients_add_4_grad_Reshape"
+  tensor_name = tensor.name.split(":")[0].replace("/", "_")
+  return _GET_SANITIZED_NAME_FN(tensor_name)
 
 
 def scalar_or_tensor_to_string(val):
@@ -404,7 +413,7 @@ class FisherFactor(object):
         the cov update.
 
     Returns:
-      Tensor of same shape as self.get_cov().
+      Tensor of same shape as self.cov.
     """
     pass
 
@@ -452,8 +461,15 @@ class FisherFactor(object):
     """Create and return update ops corresponding to registered computations."""
     pass
 
-  def get_cov(self):
+  @property
+  def cov(self):
     return self._cov
+
+  def get_cov_vars(self):
+    return [self.cov]
+
+  def get_inv_vars(self):
+    return []
 
   @abc.abstractmethod
   def get_cov_as_linear_operator(self):
@@ -518,8 +534,8 @@ class DenseSquareMatrixFactor(FisherFactor):
 
   def get_cov_as_linear_operator(self):
     """Returns `LinearOperator` instance which wraps the cov matrix."""
-    assert self.get_cov().shape.ndims == 2
-    return lo.LinearOperatorFullMatrix(self.get_cov(),
+    assert self.cov.shape.ndims == 2
+    return lo.LinearOperatorFullMatrix(self.cov,
                                        is_self_adjoint=True,
                                        is_square=True)
 
@@ -584,6 +600,13 @@ class DenseSquareMatrixFactor(FisherFactor):
 
     if damping_id not in self._cholesky_inverse_registrations:
       self._cholesky_inverse_registrations.add(damping_id)
+
+  def get_inv_vars(self):
+    inv_vars = []
+    inv_vars.extend(self._matpower_by_exp_and_damping.values())
+    inv_vars.extend(self._cholesky_by_damping.values())
+    inv_vars.extend(self._cholesky_inverse_by_damping.values())
+    return inv_vars
 
   def instantiate_inv_variables(self):
     """Makes the internal "inverse" variable(s)."""
@@ -666,7 +689,7 @@ class DenseSquareMatrixFactor(FisherFactor):
           self._matpower_by_exp_and_damping.items()):
         assert exp == -1
         damping = damping_value_by_id[damping_id]
-        ops.append(matpower.assign(utils.posdef_inv(self.get_cov(), damping)))
+        ops.append(matpower.assign(utils.posdef_inv(self.cov, damping)))
 
     # TODO(b/77902055): If inverses are being computed with Cholesky's
     # we can share the work. Instead this code currently just computes the
@@ -676,7 +699,7 @@ class DenseSquareMatrixFactor(FisherFactor):
       cholesky_ops = []
 
       damping = damping_value_by_id[damping_id]
-      cholesky_value = utils.cholesky(self.get_cov(), damping)
+      cholesky_value = utils.cholesky(self.cov, damping)
 
       if damping_id in self._cholesky_by_damping:
         cholesky = self._cholesky_by_damping[damping_id]
@@ -692,7 +715,7 @@ class DenseSquareMatrixFactor(FisherFactor):
     for damping_id, cholesky in self._cholesky_by_damping.items():
       if damping_id not in self._cholesky_inverse_by_damping:
         damping = damping_value_by_id[damping_id]
-        cholesky_value = utils.cholesky(self.get_cov(), damping)
+        cholesky_value = utils.cholesky(self.cov, damping)
         ops.append(cholesky.assign(cholesky_value))
 
     self._eigendecomp = False
@@ -705,12 +728,12 @@ class DenseSquareMatrixFactor(FisherFactor):
   def get_matpower(self, exp, damping_func):
     # Note that this function returns a variable which gets updated by the
     # inverse ops.  It may be stale / inconsistent with the latest value of
-    # get_cov().
+    # self.cov.
     if exp != 1:
       damping_id = graph_func_to_id(damping_func)
       matpower = self._matpower_by_exp_and_damping[(exp, damping_id)]
     else:
-      matpower = self.get_cov()
+      matpower = self.cov
       identity = tf.eye(matpower.shape.as_list()[0], dtype=matpower.dtype)
       matpower += tf.cast(damping_func(), dtype=matpower.dtype)*identity
 
@@ -724,7 +747,7 @@ class DenseSquareMatrixFactor(FisherFactor):
   def get_cholesky(self, damping_func):
     # Note that this function returns a variable which gets updated by the
     # inverse ops.  It may be stale / inconsistent with the latest value of
-    # get_cov().
+    # self.cov.
     damping_id = graph_func_to_id(damping_func)
     cholesky = self._cholesky_by_damping[damping_id]
     assert cholesky.shape.ndims == 2
@@ -735,7 +758,7 @@ class DenseSquareMatrixFactor(FisherFactor):
   def get_cholesky_inverse(self, damping_func):
     # Note that this function returns a variable which gets updated by the
     # inverse ops.  It may be stale / inconsistent with the latest value of
-    # get_cov().
+    # self.cov.
     damping_id = graph_func_to_id(damping_func)
     cholesky_inv = self._cholesky_inverse_by_damping[damping_id]
     assert cholesky_inv.shape.ndims == 2
@@ -746,9 +769,9 @@ class DenseSquareMatrixFactor(FisherFactor):
   def get_eigendecomp(self):
     """Creates or retrieves eigendecomposition of self._cov."""
     # Unlike get_matpower this doesn't retrieve a stored variable, but instead
-    # always computes a fresh version from the current value of get_cov().
+    # always computes a fresh version from the current value of self.cov.
     if not self._eigendecomp:
-      eigenvalues, eigenvectors = tf.self_adjoint_eig(self.get_cov())
+      eigenvalues, eigenvectors = tf.self_adjoint_eig(self.cov)
 
       # The matrix self._cov is positive semidefinite by construction, but the
       # numerical eigenvalues could be negative due to numerical errors, so here
@@ -829,7 +852,7 @@ class DiagonalFactor(FisherFactor):
 
   @property
   def _matrix_diagonal(self):
-    return tf.reshape(self.get_cov(), [-1])
+    return tf.reshape(self.cov, [-1])
 
   def make_inverse_update_ops(self):
     return []
@@ -1557,8 +1580,13 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
         tuple(nest.flatten(self._tensors))
         + (self._num_timesteps, self._has_bias,))
 
-  def make_covariance_update_op(self, ema_decay):
+  def get_inv_vars(self):
+    inv_vars = super(FullyConnectedMultiKF, self).get_inv_vars()
+    inv_vars.extend(self._option1quants_by_damping.values())
+    inv_vars.extend(self._option2quants_by_damping.values())
+    return inv_vars
 
+  def make_covariance_update_op(self, ema_decay):
     op = super(FullyConnectedMultiKF, self).make_covariance_update_op(ema_decay)
 
     if self._cov_dt1 is not None:
@@ -1622,9 +1650,16 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     damping_id = graph_func_to_id(damping_func)
     return self._option2quants_by_damping[damping_id]
 
-  def get_cov_dt1(self):
+  @property
+  def cov_dt1(self):
     assert self._cov_dt1 is not None
     return self._cov_dt1
+
+  def get_cov_vars(self):
+    cov_vars = super(FullyConnectedMultiKF, self).get_cov_vars()
+    if self._make_cov_dt1:
+      cov_vars += [self.cov_dt1]
+    return cov_vars
 
   def register_cov_dt1(self):
     self._make_cov_dt1 = True
@@ -1721,9 +1756,9 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       # the A and G case are essentially the same they can both be performed by
       # the same class (this one).
 
-      C1 = self.get_cov_dt1()
+      C1 = self.cov_dt1
 
-      # Get the eigendecomposition of C0  (= self.get_cov())
+      # Get the eigendecomposition of C0  (= self.cov)
       eigen_e, eigen_V = self.get_eigendecomp()
 
       # TODO(b/69678661): Note, there is an implicit assumption here that C1

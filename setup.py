@@ -19,7 +19,7 @@ from setuptools import setup
 
 setup(
     name='kfac',
-    version='0.1.0',
+    version='0.1.1',
     description='K-FAC for TensorFlow',
     author='Google Inc.',
     author_email='no-reply@google.com',
@@ -30,8 +30,10 @@ setup(
         'kfac.python.kernel_tests.*',
     ]),
     scripts=[
+        'kfac/examples/convnet_mnist_distributed_main.py',
         'kfac/examples/convnet_mnist_main.py',
-        'kfac/examples/mlp_mnist_main.py',
+        'kfac/examples/convnet_mnist_multi_tower_main.py',
+        'kfac/examples/convnet_mnist_single_main.py',
     ],
     install_requires=[
         'numpy',
@@ -40,7 +42,7 @@ setup(
     extras_require={
         'tensorflow': ['tensorflow>=1.4.1'],
         'tensorflow_gpu': ['tensorflow-gpu>=1.4.1'],
-        'tests': ['pytest'],
+        'tests': ['pytest', 'dm-sonnet'],
     },
     classifiers=[
         'Development Status :: 4 - Beta',

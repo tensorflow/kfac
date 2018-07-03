@@ -149,8 +149,8 @@ class GraphSearchTestCase(tf.test.TestCase):
     with tf.Graph().as_default():
       layer_collection = lc.LayerCollection()
       gs.register_layers(layer_collection, tf.trainable_variables())
-      self.assertEmpty(layer_collection.fisher_blocks)
-      self.assertEmpty(layer_collection.losses)
+      self.assertEqual(0, len(layer_collection.fisher_blocks))
+      self.assertEqual(0, len(layer_collection.losses))
 
   def testRegisterLayers(self):
     """Ensure graph search can find a single layer network."""
@@ -178,9 +178,10 @@ class GraphSearchTestCase(tf.test.TestCase):
       gs.register_layers(layer_collection, tf.trainable_variables())
 
       # Ensure 1-layer got registered.
-      self.assertSameElements([(weights, bias)],
-                              layer_collection.fisher_blocks.keys())
-      self.assertLen(layer_collection.losses, 1)
+      self.assertEqual(
+          [(weights, bias)],
+          list(layer_collection.fisher_blocks.keys()))
+      self.assertEqual(1, len(layer_collection.losses))
 
   def test_register_records_order(self):
     """Ensure records are always registered in the same order."""

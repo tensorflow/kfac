@@ -40,7 +40,6 @@ from __future__ import print_function
 import abc
 
 # Dependency imports
-import numpy as np
 import six
 import tensorflow as tf
 
