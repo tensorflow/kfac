@@ -22,9 +22,9 @@ import collections
 
 import tensorflow as tf
 
-from tensorflow.contrib.kfac import fisher_blocks as fb
-from tensorflow.contrib.kfac import layer_collection as lc
-from tensorflow.contrib.kfac import optimizer
+from kfac.python.ops import fisher_blocks as fb
+from kfac.python.ops import layer_collection as lc
+from kfac.python.ops import optimizer
 
 from kfac.python.ops.tensormatch import graph_search as gs
 
