@@ -70,7 +70,7 @@ class AsyncInvCovUpdateKfacOpt(tf.test.TestCase):
     with self.test_session() as sess:
       sess.run(tf.global_variables_initializer())
       optimizer.run_cov_inv_ops(sess)
-      for _ in xrange(max_iterations):
+      for _ in range(max_iterations):
         loss_, _ = sess.run([loss, train_step])
         if loss_ < target_loss:
           break
