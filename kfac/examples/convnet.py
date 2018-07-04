@@ -38,6 +38,7 @@ import tensorflow as tf
 
 from kfac.examples import mnist
 
+
 __all__ = [
     "conv_layer",
     "fc_layer",
@@ -827,7 +828,7 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
       return tf.group(*update_ops)
 
     def make_batch_executed_op(update_thunks, batch_size=1):
-      return tf.group(*tf.contrib.kfac.utils.batch_execute(
+      return tf.group(*kfac.utils.batch_execute(
           global_step, update_thunks, batch_size=batch_size))
 
     # Run cov_update_op every step. Run 1 inv_update_ops per step.
