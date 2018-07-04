@@ -109,7 +109,7 @@ class AsyncInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     self._threads = [
         threading.Thread(target=self._run_ops, args=(
             (sess,)
-        )) for _ in xrange(self._num_cov_inv_update_threads)
+        )) for _ in range(self._num_cov_inv_update_threads)
     ]
     for t in self._threads:
       t.start()

@@ -109,6 +109,9 @@ def record_affine_from_bindings(bindings, consumed_tensors,
       record_type = RecordType.conv2d
       strides = tuple(map(int, linear_op.get_attr('strides')))
       padding = linear_op.get_attr('padding')
+      # In Python 3 this might be class "bytes" so we convert to string.
+      if not isinstance(padding, str):
+        padding = padding.decode()
       record_data['strides'] = strides
       record_data['padding'] = padding
 

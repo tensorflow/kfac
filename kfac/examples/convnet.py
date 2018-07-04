@@ -226,7 +226,7 @@ def build_model(examples,
                                        pre2)
       layer_collection.register_fully_connected(params4, flat_act3, logits)
     else:
-      kfac.graph_search.register_layers(layer_collection, tf.trainable_variables())
+      layer_collection.auto_register_layers()
 
   return loss, accuracy
 
