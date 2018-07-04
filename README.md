@@ -106,3 +106,4 @@ See [`examples/`](https://github.com/tensorflow/kfac/tree/master/kfac/examples) 
 - Matthew Johnson
 - Olga Wichrowska
 - Roger Grosse
+- Vikram Tankasali

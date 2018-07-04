@@ -38,6 +38,7 @@ from tensorflow.python.util import nest
 from kfac.python.ops import fisher_blocks as fb
 from kfac.python.ops import loss_functions as lf
 from kfac.python.ops import utils
+from kfac.python.ops.tensormatch import graph_search
 
 # Names for various approximations that can be requested for Fisher blocks.
 APPROX_KRONECKER_NAME = "kron"
@@ -177,7 +178,7 @@ class LayerCollection(object):
     self._graph = graph or tf.get_default_graph()
     self._loss_dict = {}  # {str: LossFunction}
     self._subgraph = None
-    self._default_generic_approximation = APPROX_FULL_NAME
+    self._default_generic_approximation = APPROX_DIAGONAL_NAME
     self._default_embedding_approximation = APPROX_KRONECKER_NAME
     self._default_fully_connected_approximation = APPROX_KRONECKER_NAME
     self._default_conv2d_approximation = APPROX_KRONECKER_NAME
@@ -286,6 +287,12 @@ class LayerCollection(object):
   def default_embedding_multi_approximation(self):
     return self._default_embedding_multi_approximation
 
+  def auto_register_layers(self, var_list=None, **kwargs):
+    """Registers all layers automatically."""
+    if var_list is None:
+      var_list = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    graph_search.register_layers(self, var_list, **kwargs)
+
   def register_block(self, layer_key, fisher_block, reuse=VARIABLE_SCOPE):
     """Validates and registers the layer_key associated with the fisher_block.
 
@@ -358,9 +365,8 @@ class LayerCollection(object):
         is None.
       name: (OPTIONAL) str or None. Unique name for this loss function. If None,
         a new name is generated. (Default: None)
-      reuse: (OPTIONAL) bool or str.  If True, reuse an existing FisherBlock.
-        If False, create a new FisherBlock.  If VARIABLE_SCOPE, use
-        tf.get_variable_scope().reuse.
+      reuse: (OPTIONAL) bool or str.  If True, adds 'loss' as an additional
+        tower for the existing loss function.
 
     Raises:
       ValueError: If reuse == True and name == None.
@@ -989,9 +995,11 @@ class LayerCollection(object):
                                                    num_uses=num_uses),
                                 reuse=reuse)
     block.register_additional_tower(inputs, outputs)
-
-    assert len(inputs) == len(outputs)
-    self._add_uses(params, len(inputs))
+    if isinstance(inputs, (tuple, list)):
+      assert len(inputs) == len(outputs)
+      self._add_uses(params, len(inputs))
+    else:
+      self._add_uses(params, 1)
 
   def register_conv2d_multi(self,
                             params,
@@ -1065,9 +1073,11 @@ class LayerCollection(object):
         reuse=reuse)
 
     block.register_additional_tower(inputs, outputs)
-
-    assert len(inputs) == len(outputs)
-    self._add_uses(params, len(inputs))
+    if isinstance(inputs, (tuple, list)):
+      assert len(inputs) == len(outputs)
+      self._add_uses(params, len(inputs))
+    else:
+      self._add_uses(params, 1)
 
   # TODO(b/74108452): change the loss registration functions names to refer
   # to "loss functions" instead of distributions.  Following naming convention
@@ -1128,7 +1138,10 @@ class LayerCollection(object):
         params, block_type(self, vocab_size, num_uses=num_uses), reuse=reuse)
     block.register_additional_tower(inputs, outputs)
 
-    self._add_uses(params, len(inputs))
+    if isinstance(inputs, (tuple, list)):
+      self._add_uses(params, len(inputs))
+    else:
+      self._add_uses(params, 1)
 
   def register_categorical_predictive_distribution(self,
                                                    logits,

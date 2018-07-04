@@ -23,8 +23,16 @@ import numpy as np
 import tensorflow as tf
 
 from kfac.python.ops import fisher_blocks as fb
+from kfac.python.ops import fisher_factors as ff
 from kfac.python.ops import layer_collection as lc
+from kfac.python.ops import linear_operator as lo
 from kfac.python.ops import utils
+
+# We need to set these constants since the numerical values used in the tests
+# were chosen when these used to be the defaults.
+ff.set_global_constants(init_covariances_at_zero=False,
+                        zero_debias=False,
+                        init_inverses_at_zero=False)
 
 
 def _make_psd(dim):
@@ -39,8 +47,9 @@ class UtilsTest(tf.test.TestCase):
   def testComputePiTracenorm(self):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
-      left_factor = tf.diag([1., 2., 0., 1.])
-      right_factor = tf.ones([2., 2.])
+      diag = tf.convert_to_tensor([1., 2., 0., 1.])
+      left_factor = lo.LinearOperatorDiag(diag)
+      right_factor = lo.LinearOperatorFullMatrix(tf.ones([2, 2]))
 
       # pi is the sqrt of the left trace norm divided by the right trace norm
       pi = fb.compute_pi_tracenorm(left_factor, right_factor)
