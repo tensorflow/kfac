@@ -72,7 +72,7 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
       sess.run(tf.global_variables_initializer())
       coord = tf.train.Coordinator()
       tf.train.start_queue_runners(sess=sess, coord=coord)
-      for iteration in xrange(max_iterations):
+      for iteration in range(max_iterations):
         sess.run([loss, train_step])
         counter_ = sess.run(counter)
         self.assertEqual(counter_, iteration + 1.0)
