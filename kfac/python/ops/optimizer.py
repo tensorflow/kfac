@@ -32,9 +32,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
   def __init__(self,
                learning_rate,
-               cov_ema_decay,
                damping,
                layer_collection,
+               cov_ema_decay=0.95,
                var_list=None,
                momentum=0.9,
                momentum_type="regular",
@@ -52,8 +52,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           be set to 1.0 when using momentum_type = 'qmodel', but can still be
           set lowered if desired (effectively lowering the trust in the
           quadratic model.)
-      cov_ema_decay: The decay factor used when calculating the covariance
-          estimate moving averages.
       damping: The damping factor used to stabilize training due to errors in
           the local approximation with the Fisher information matrix, and to
           regularize the update direction by making it closer to the gradient.
@@ -65,6 +63,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           blocks, kronecker factors, and losses associated with the
           graph.  The layer_collection cannot be modified after KfacOptimizer's
           initialization.
+      cov_ema_decay: (Optional) The decay factor used when calculating the
+        covariance estimate moving averages. (Default: 0.95)
       var_list: Optional list or tuple of variables to train. Defaults to the
           list of variables collected in the graph under the key
           `GraphKeys.TRAINABLE_VARIABLES`.
