@@ -415,11 +415,12 @@ class FisherEstimator(object):
 
     Note the returned list also includes additional factor specific covaraince
     variables.
+
+    Returns: List of list. The number of inner lists is equal to number of
+      factors. And each inner list contains all covariance
+      variables for that factor.
     """
-    cov_vars = []
-    for factor in self.factors:
-      cov_vars.extend(factor.get_cov_vars())
-    return cov_vars
+    return tuple(factor.get_cov_vars() for factor in self.factors)
 
   def get_inv_vars(self):
     """Returns all covariance variables associated with each Fisher factor.
