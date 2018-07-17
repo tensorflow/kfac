@@ -96,7 +96,12 @@ def compute_pi_tracenorm(left_cov, right_cov):
   # other norm. This works out the same in the ratio.
   left_norm = left_cov.trace() * int(right_cov.domain_dimension)
   right_norm = right_cov.trace() * int(left_cov.domain_dimension)
-  return tf.sqrt(left_norm / right_norm)
+  assert_positive = tf.assert_positive(
+      right_norm,
+      message="PI computation, trace of right cov matrix should be positive")
+  with tf.control_dependencies([assert_positive]):
+    pi = tf.sqrt(left_norm / right_norm)
+  return pi
 
 
 def compute_pi_adjusted_damping(left_cov, right_cov, damping):
