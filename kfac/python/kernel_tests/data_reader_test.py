@@ -20,7 +20,7 @@ from __future__ import print_function
 
 
 # Dependency imports
-import tensorflow.google as tf
+import tensorflow as tf
 
 from kfac.python.ops.kfac_utils import data_reader
 
