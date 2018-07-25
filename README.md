@@ -25,85 +25,9 @@ $ pip install 'kfac[tensorflow_gpu]'
 $ pip install 'kfac[tensorflow]'
 ```
 
-## What is K-FAC?
+## KFAC DOCS
 
-K-FAC, short for "Kronecker-factored Approximate Curvature", is an approximation
-to the [Natural Gradient][natural_gradient] algorithm designed specifically for
-neural networks. It maintains a block-diagonal approximation to the [Fisher
-Information matrix][fisher_information], whose inverse preconditions the
-gradient.
+Please check [KFAC docs][kfac_docs] for detailed description with examples
+of how to use KFAC.
 
-K-FAC can be used in place of SGD, Adam, and other `Optimizer` implementations.
-Experimentally, K-FAC converges `>3.5x` faster than well-tuned SGD.
-
-Unlike most optimizers, K-FAC exploits structure in the model itself (e.g. "What
-are the weights for layer i?"). As such, you must add some additional code while
-constructing your model to use K-FAC.
-
-[natural_gradient]: http://www.mitpressjournals.org/doi/abs/10.1162/089976698300017746
-[fisher_information]: https://en.wikipedia.org/wiki/Fisher_information#Matrix_form
-
-## Why should I use K-FAC?
-
-K-FAC can take advantage of the curvature of the optimization problem, resulting
-in **faster training**. For an 8-layer Autoencoder, K-FAC converges to the same
-loss as SGD with Momentum in 3.8x fewer seconds and 14.7x fewer updates. See how
-training loss changes as a function of number of epochs, steps, and seconds:
-
-![autoencoder](docs/autoencoder.png?raw=true)
-
-## Is K-FAC for me?
-
-If you have a feedforward or convolutional model for classification that is
-converging too slowly, K-FAC is for you. K-FAC can be used in your model if:
-
-*   Your model defines a posterior distribution.
-*   Your model uses only fully-connected or convolutional layers (residual
-    connections OK).
-*   You are training on CPU or GPU.
-*   You can modify model code to register layers with K-FAC.
-
-## How do I use K-FAC?
-
-Using K-FAC requires three steps:
-
-1.  Registering layer inputs, weights, and pre-activations with a
-    `LayerCollection`.
-1.  Minimizing the loss with a `KfacOptimizer`.
-1.  Keeping K-FAC's preconditioner updated.
-
-```python
-# Build model.
-w = tf.get_variable("w", ...)
-b = tf.get_variable("b", ...)
-logits = tf.matmul(x, w) + b
-loss = tf.reduce_mean(
-  tf.nn.softmax_cross_entropy_with_logits(labels=y, logits=logits))
-
-# Register layers.
-layer_collection = LayerCollection()
-layer_collection.register_fully_connected((w, b), x, logits)
-layer_collection.register_categorical_predictive_distribution(logits)
-
-# Construct training ops.
-optimizer = KfacOptimizer(..., layer_collection=layer_collection)
-_, cov_update_op, _, inv_update_op, _, _ = optimizer.make_ops_and_vars()
-train_op = optimizer.minimize(loss)
-
-# Minimize loss.
-with tf.Session() as sess:
-  ...
-  sess.run([train_op, cov_update_op, inv_update_op])
-```
-
-See [`examples/`](https://github.com/tensorflow/kfac/tree/master/kfac/examples) for runnable, end-to-end illustrations.
-
-## Authors
-
-- Alok Aggarwal
-- Daniel Duckworth
-- James Martens
-- Matthew Johnson
-- Olga Wichrowska
-- Roger Grosse
-- Vikram Tankasali
+[kfac_docs]: https://github.com/tensorflow/kfac/tree/master/docs/index.md

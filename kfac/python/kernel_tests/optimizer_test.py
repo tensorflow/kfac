@@ -45,7 +45,7 @@ class OptimizerTest(tf.test.TestCase):
   def testOptimizerInitInvalidMomentumRegistration(self):
     with self.assertRaises(ValueError):
       optimizer.KfacOptimizer(
-          0.1, 0.2, 0.3, lc.LayerCollection(), momentum_type='foo')
+          0.1, 0.2, lc.LayerCollection(), 0.3, momentum_type='foo')
 
   def testOptimizerInit(self):
     with tf.Graph().as_default():
@@ -71,8 +71,8 @@ class OptimizerTest(tf.test.TestCase):
       optimizer.KfacOptimizer(
           0.1,
           0.2,
-          0.3,
           layer_collection,
+          0.3,
           momentum=0.5,
           momentum_type='regular')
 
@@ -82,7 +82,7 @@ class OptimizerTest(tf.test.TestCase):
                         (tf.constant([[2., 3.], [4., 5.]]), None)]
       pgrads_and_vars = [(tf.constant([[3., 4.], [5., 6.]]), None),
                          (tf.constant([[7., 8.], [9., 10.]]), None)]
-      opt = optimizer.KfacOptimizer(0.1, 0.2, 0.3, dummy_layer_collection())
+      opt = optimizer.KfacOptimizer(0.1, 0.2, dummy_layer_collection(), 0.3)
       sq_norm = opt._squared_fisher_norm(grads_and_vars, pgrads_and_vars)
       self.assertAlmostEqual(174., sess.run(sq_norm), places=5)
 
@@ -100,14 +100,14 @@ class OptimizerTest(tf.test.TestCase):
       # If the update already satisfies the norm constraint, there should
       # be no rescaling.
       opt = optimizer.KfacOptimizer(
-          lrate, 0.2, 0.3, dummy_layer_collection(), norm_constraint=10.)
+          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=10.)
       coeff = opt._update_clip_coeff(grads_and_vars, pgrads_and_vars)
       self.assertAlmostEqual(1., sess.run(coeff), places=5)
 
       # If the update violates the constraint, it should be rescaled to
       # be on the constraint boundary.
       opt = optimizer.KfacOptimizer(
-          lrate, 0.2, 0.3, dummy_layer_collection(), norm_constraint=0.5)
+          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=0.5)
       coeff = opt._update_clip_coeff(grads_and_vars, pgrads_and_vars)
       sq_norm_pgrad = opt._squared_fisher_norm(grads_and_vars, pgrads_and_vars)
       sq_norm_update = lrate**2 * coeff**2 * sq_norm_pgrad
@@ -118,7 +118,7 @@ class OptimizerTest(tf.test.TestCase):
       layers = lc.LayerCollection()
       layers.register_categorical_predictive_distribution(tf.constant([1.0]))
       opt = optimizer.KfacOptimizer(
-          0.1, 0.2, 0.3, layers, momentum=0.5, momentum_type='regular')
+          0.1, 0.2, layers, 0.3, momentum=0.5, momentum_type='regular')
       x = tf.get_variable('x', initializer=tf.ones((2, 2)))
       y = tf.get_variable('y', initializer=tf.ones((2, 2)) * 2)
       vec1 = tf.ones((2, 2)) * 3
@@ -173,8 +173,8 @@ class OptimizerTest(tf.test.TestCase):
       opt = optimizer.KfacOptimizer(
           0.1,
           0.2,
-          0.3,
           layer_collection,
+          0.3,
           momentum=0.5,
           momentum_type='regular')
       (cov_update_thunks,
