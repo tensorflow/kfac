@@ -147,8 +147,8 @@ def diagonal_covariance_initializer(shape, dtype, partition_info=None):  # pylin
 
 
 @contextlib.contextmanager
-def place_on_device(device):
-  if device is not None and len(device):
+def maybe_place_on_device(device):
+  if device is not None and len(device) and TOWER_STRATEGY == "separate":
     with tf.device(device):
       yield
   else:
@@ -428,9 +428,7 @@ class FisherFactor(object):
     new_cov_contribs = []
     for source in range(self._num_sources):
       for tower in range(self._num_towers):
-        device = (self._get_data_device(tower)
-                  if TOWER_STRATEGY == "separate" else None)
-        with place_on_device(device):
+        with maybe_place_on_device(self._get_data_device(tower)):
           new_cov_contribs.append(self._compute_new_cov(source, tower))
 
     new_cov = tf.add_n(new_cov_contribs) / float(self._num_towers)
@@ -1090,7 +1088,7 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
     for tower in range(self._num_towers):
       inputs = self._inputs[tower]
 
-      with place_on_device(self._get_data_device(tower)):
+      with maybe_place_on_device(self._get_data_device(tower)):
         if self._has_bias:
           inputs = append_homog(inputs)
         self._squared_inputs.append(tf.square(inputs))
@@ -1218,7 +1216,7 @@ class ConvDiagonalFactor(DiagonalFactor):
 
     self._patches = []
     for tower in range(self._num_towers):
-      with place_on_device(self._get_data_device(tower)):
+      with maybe_place_on_device(self._get_data_device(tower)):
         patches = tf.extract_image_patches(
             self._inputs[tower],
             ksizes=[1, filter_height, filter_width, 1],
@@ -1593,7 +1591,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       new_cov_dt1_contribs = []
       for source in range(self._num_sources):
         for tower in range(self._num_towers):
-          with place_on_device(self._get_data_device(tower)):
+          with maybe_place_on_device(self._get_data_device(tower)):
             new_cov_dt1_contribs.append(self._compute_new_cov_dt1(source,
                                                                   tower))
 
