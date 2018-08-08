@@ -27,8 +27,8 @@ from absl import flags
 import kfac
 import tensorflow as tf
 
+from kfac.examples import mnist
 from kfac.python.ops.kfac_utils import data_reader
-from kfac.python.ops.kfac_utils import mnist
 
 # Training batch size.
 _BATCH_SIZE = 128
