@@ -31,7 +31,6 @@ setup(
     ]),
     scripts=[
         'kfac/examples/convnet_mnist_distributed_main.py',
-        'kfac/examples/convnet_mnist_main.py',
         'kfac/examples/convnet_mnist_multi_tower_main.py',
         'kfac/examples/convnet_mnist_single_main.py',
     ],
