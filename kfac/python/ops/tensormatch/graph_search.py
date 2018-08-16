@@ -18,8 +18,8 @@ import warnings
 import enum
 import tensorflow as tf
 
-from tensorflow.contrib.kfac import utils
 from tensorflow.python.ops import resource_variable_ops
+from kfac.python.ops import utils
 from kfac.python.ops.tensormatch import graph_matcher as gm
 from kfac.python.ops.tensormatch import graph_patterns as gp
 from kfac.python.ops.tensormatch import tensorflow_graph_util as graph_utils
