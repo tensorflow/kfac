@@ -21,6 +21,7 @@ from __future__ import print_function
 import abc
 import contextlib
 # Dependency imports
+import math
 import numpy as np
 import six
 import tensorflow as tf
@@ -51,21 +52,40 @@ EIGENVALUE_DECOMPOSITION_THRESHOLD = 2
 # matrix powers. Must be nonnegative.
 EIGENVALUE_CLIPPING_THRESHOLD = 0.0
 
-# Used to subsample the flattened extracted image patches. The number of
-# outer products per row of the covariance matrix should not exceed this
-# value. This parameter is used only if `_SUB_SAMPLE_OUTER_PRODUCTS` is True.
-_MAX_NUM_OUTER_PRODUCTS_PER_COV_ROW = 1
 
-# Used to subsample the inputs passed to the extract image patches. The batch
-# size of number of inputs to extract image patches is multiplied by this
-# factor. This parameter is used only if `_SUB_SAMPLE_INPUTS` is True.
-_INPUTS_TO_EXTRACT_PATCHES_FACTOR = 0.5
-
-# If True, then subsamples the tensor passed to compute the covaraince matrix.
-_SUB_SAMPLE_OUTER_PRODUCTS = False
-
-# If True, then subsamples the tensor passed to compute the covaraince matrix.
+# Subsample the inputs passed to the extract image patches. The number of
+# inputs is normally batch_size. If _SUB_SAMPLE_INPUTS = True then
+# the inputs will be randomly subsampled down to a total of
+# _INPUTS_TO_EXTRACT_PATCHES_FACTOR * batch_size.
+#
+# Note that the value of _SUB_SAMPLE_INPUTS can be overridden locally for a
+# particular layer by passing in an argument to the factor class (or the
+# registration function for the corresponding layer).
 _SUB_SAMPLE_INPUTS = False
+_INPUTS_TO_EXTRACT_PATCHES_FACTOR = 0.2
+
+
+# Subsample the extracted image patches during covariance estimation for
+# input factors in conv layer. The number of patches subsampled will be
+# calculated based on the following formula:
+#
+# if _SUB_SAMPLE_PATCHES:
+#   num_patches = min(_MAX_NUM_PATCHES,
+#                     ceil(_MAX_NUM_PATCHES_PER_DIMENSION*dimension))
+# else
+#   num_patches = total_patches
+#
+# where dimension is the number of rows (or columns) of the input factor matrix,
+# which is typically the number of input channels times the number of pixels
+# in a patch.
+#
+# Note that the value of _SUB_SAMPLE_PATCHES can be overridden locally for a
+# particular layer by passing in an argument to the factor class (or the
+# registration function for the corresponding layer).
+_SUB_SAMPLE_PATCHES = False
+_MAX_NUM_PATCHES = 10000000
+_MAX_NUM_PATCHES_PER_DIMENSION = 3.0
+
 
 # TOWER_STRATEGY can be one of "concat" or "separate".  If "concat", the data
 # passed to the factors from the blocks will be concatenated across towers
@@ -85,10 +105,11 @@ def set_global_constants(init_covariances_at_zero=None,
                          init_inverses_at_zero=None,
                          eigenvalue_decomposition_threshold=None,
                          eigenvalue_clipping_threshold=None,
-                         max_num_outer_products_per_cov_row=None,
-                         sub_sample_outer_products=None,
-                         inputs_to_extract_patches_factor=None,
                          sub_sample_inputs=None,
+                         inputs_to_extract_patches_factor=None,
+                         sub_sample_patches=None,
+                         max_num_patches=None,
+                         max_num_patches_per_dimension=None,
                          tower_strategy=None,
                          get_sanitized_name_fn=None):
   """Sets various global constants used by the classes in this module."""
@@ -97,10 +118,11 @@ def set_global_constants(init_covariances_at_zero=None,
   global INIT_INVERSES_AT_ZERO
   global EIGENVALUE_DECOMPOSITION_THRESHOLD
   global EIGENVALUE_CLIPPING_THRESHOLD
-  global _MAX_NUM_OUTER_PRODUCTS_PER_COV_ROW
-  global _SUB_SAMPLE_OUTER_PRODUCTS
-  global _INPUTS_TO_EXTRACT_PATCHES_FACTOR
   global _SUB_SAMPLE_INPUTS
+  global _INPUTS_TO_EXTRACT_PATCHES_FACTOR
+  global _SUB_SAMPLE_PATCHES
+  global _MAX_NUM_PATCHES
+  global _MAX_NUM_PATCHES_PER_DIMENSION
   global _GET_SANITIZED_NAME_FN
   global TOWER_STRATEGY
 
@@ -114,14 +136,16 @@ def set_global_constants(init_covariances_at_zero=None,
     EIGENVALUE_DECOMPOSITION_THRESHOLD = eigenvalue_decomposition_threshold
   if eigenvalue_clipping_threshold is not None:
     EIGENVALUE_CLIPPING_THRESHOLD = eigenvalue_clipping_threshold
-  if max_num_outer_products_per_cov_row is not None:
-    _MAX_NUM_OUTER_PRODUCTS_PER_COV_ROW = max_num_outer_products_per_cov_row
-  if sub_sample_outer_products is not None:
-    _SUB_SAMPLE_OUTER_PRODUCTS = sub_sample_outer_products
-  if inputs_to_extract_patches_factor is not None:
-    _INPUTS_TO_EXTRACT_PATCHES_FACTOR = inputs_to_extract_patches_factor
   if sub_sample_inputs is not None:
     _SUB_SAMPLE_INPUTS = sub_sample_inputs
+  if inputs_to_extract_patches_factor is not None:
+    _INPUTS_TO_EXTRACT_PATCHES_FACTOR = inputs_to_extract_patches_factor
+  if sub_sample_patches is not None:
+    _SUB_SAMPLE_PATCHES = sub_sample_patches
+  if max_num_patches is not None:
+    _MAX_NUM_PATCHES = max_num_patches
+  if max_num_patches_per_dimension is not None:
+    _MAX_NUM_PATCHES_PER_DIMENSION = max_num_patches_per_dimension
   if tower_strategy is not None:
     TOWER_STRATEGY = tower_strategy
   if get_sanitized_name_fn is not None:
@@ -271,59 +295,69 @@ def graph_func_to_string(func):
   return list_to_string(func.func_id)
 
 
-def _subsample_for_cov_computation(array, name=None):
-  """Subsamples the first dimension of the array.
+def _subsample_patches(patches, name=None):
+  """Subsample a patches matrix.
 
-  `array`(A) is a tensor of shape `[batch_size, dim_2]`. Then the covariance
-  matrix(A^TA) is of shape `dim_2 ** 2`. Subsample only if the number of outer
-  products per row of the covariance matrix is greater than
-  `_MAX_NUM_OUTER_PRODUCTS_PER_COV_ROW`.
+  Subsample an array of image patches. The number of patches subsampled will be
+  calculated based on the following formula:
+
+  num_patches = min(_MAX_NUM_PATCHES,
+                    ceil(_MAX_NUM_PATCHES_PER_DIMENSION*dimension))
 
   Args:
-    array: Tensor, of shape `[batch_size, dim_2]`.
+    patches: Tensor, of shape `[total_patches, dimension]`.
     name: `string`, Default (None)
 
   Returns:
-    A tensor of shape `[max_samples, dim_2]`.
+    A tensor of shape `[num_patches, dimension]`.
 
   Raises:
-    ValueError: If array's is not matrix-shaped.
-    ValueError: If array's batch_size cannot be inferred.
+    ValueError: If patches is not matrix-shaped.
+    ValueError: If total_patches cannot be inferred.
 
   """
-  with tf.name_scope(name, "subsample", [array]):
-    array = tf.convert_to_tensor(array)
-    if len(array.shape) != 2:
-      raise ValueError("Input param array must be a matrix.")
+  with tf.name_scope(name, "subsample", [patches]):
+    patches = tf.convert_to_tensor(patches)
+    if len(patches.shape) != 2:
+      raise ValueError("Input param patches must be a matrix.")
 
-    batch_size = array.shape.as_list()[0]
-    if batch_size is None:
-      raise ValueError("Unable to get batch_size from input param array.")
+    total_patches = patches.shape.as_list()[0]
+    dimension = patches.shape.as_list()[1]
+    num_patches = min(_MAX_NUM_PATCHES,
+                      int(math.ceil(_MAX_NUM_PATCHES_PER_DIMENSION*dimension)))
 
-    num_cov_rows = array.shape.as_list()[-1]
-    max_batch_size = int(_MAX_NUM_OUTER_PRODUCTS_PER_COV_ROW * num_cov_rows)
-    if batch_size <= max_batch_size:
-      return array
+    if total_patches is None:
+      total_patches = tf.shape(patches)[0]
 
-    return _random_tensor_gather(array, max_batch_size, name)
+      should_subsample = tf.less(num_patches, total_patches)
+      return tf.cond(should_subsample,
+                     lambda: _random_tensor_gather(patches, num_patches, name),
+                     lambda: patches)
+    else:
+      if num_patches < total_patches:
+        return _random_tensor_gather(patches, num_patches, name)
+      else:
+        return patches
 
 
-def _random_tensor_gather(array, max_size, name=None):
-  """Generates a random set of indices and gathers the value at the indcices.
+def _random_tensor_gather(array, num_ind, name=None):
+  """Samples random indices of an array (along the first dimension).
 
   Args:
-    array: Tensor, of shape `[batch_size, dim_2]`.
-    max_size: int, Number of indices to sample.
-    name: `string`, Default (None)
+    array: Tensor of shape `[batch_size, ...]`.
+    num_ind: int. Number of indices to sample.
+    name: `string`. (Default: None)
 
   Returns:
-    A tensor of shape `[max_size, ...]`.
+    A tensor of shape `[num_ind, ...]`.
   """
   with tf.name_scope(name, "random_gather", [array]):
     array = tf.convert_to_tensor(array)
-    batch_size = array.shape.as_list()[0]
-    indices = tf.random_shuffle(tf.range(0, batch_size))[:max_size]
-    return tf.gather(array, indices)
+    total_size = array.shape.as_list()[0]
+    if total_size is None:
+      total_size = tf.shape(array)[0]
+    indices = tf.random_shuffle(tf.range(0, total_size))[:num_ind]
+    return tf.gather(array, indices, axis=0)
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -1348,7 +1382,7 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
       sub_sample_inputs: `bool`. If True, then subsample the inputs from which
         the image patches are extracted. (Default: None)
       sub_sample_patches: `bool`, If `True` then subsample the extracted
-        patches.(Default: None)
+        patches. (Default: None)
     """
     self._inputs = inputs
     self._filter_shape = filter_shape
@@ -1358,15 +1392,16 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     self._data_format = data_format
     self._extract_patches_fn = extract_patches_fn
     self._has_bias = has_bias
+
     if sub_sample_inputs is None:
       self._sub_sample_inputs = _SUB_SAMPLE_INPUTS
     else:
       self._sub_sample_inputs = sub_sample_inputs
-
     if sub_sample_patches is None:
-      self._sub_sample_patches = _SUB_SAMPLE_OUTER_PRODUCTS
+      self._sub_sample_patches = _SUB_SAMPLE_PATCHES
     else:
       self._sub_sample_patches = sub_sample_patches
+
     super(ConvInputKroneckerFactor, self).__init__()
 
   @property
@@ -1400,9 +1435,13 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
 
     inputs = self._inputs[tower]
     if self._sub_sample_inputs:
-      batch_size = inputs.shape.as_list()[0]
-      max_size = int(batch_size * _INPUTS_TO_EXTRACT_PATCHES_FACTOR)
-      inputs = _random_tensor_gather(inputs, max_size)
+      batch_size = tf.shape(inputs)[0]
+      # computes: int(math.ceil(batch_size * _INPUTS_TO_EXTRACT_PATCHES_FACTOR))
+      new_size = tf.cast(
+          tf.ceil(tf.multiply(tf.cast(batch_size, dtype=tf.float32),
+                              _INPUTS_TO_EXTRACT_PATCHES_FACTOR)),
+          dtype=tf.int32)
+      inputs = _random_tensor_gather(inputs, new_size)
 
     # TODO(b/64144716): there is potential here for a big savings in terms of
     # memory use.
@@ -1451,7 +1490,7 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     # We append a homogenous coordinate to patches_flat if the layer has
     # bias parameters. This gives us [[A_l]]_H from the paper.
     if self._sub_sample_patches:
-      patches_flat = _subsample_for_cov_computation(patches_flat)
+      patches_flat = _subsample_patches(patches_flat)
 
     if self._has_bias:
       patches_flat = append_homog(patches_flat)

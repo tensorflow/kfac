@@ -234,7 +234,7 @@ def build_model(examples,
 def minimize_loss_single_machine(loss,
                                  accuracy,
                                  layer_collection,
-                                 device="/gpu:0",
+                                 device=None,
                                  session_config=None):
   """Minimize loss with K-FAC on a single machine.
 
@@ -248,13 +248,16 @@ def minimize_loss_single_machine(loss,
     accuracy: 0-D Tensor. Accuracy of classifier on current minibatch.
     layer_collection: LayerCollection instance describing model architecture.
       Used by K-FAC to construct preconditioner.
-    device: string, Either '/cpu:0' or '/gpu:0'. The covaraince and invserse
-      update ops are run on this device.
+    device: string or None. The covariance and inverse update ops are run on
+      this device. If empty or None, the default device will be used.
+      (Default: None)
     session_config: None or tf.ConfigProto. Configuration for tf.Session().
 
   Returns:
     final value for 'accuracy'.
   """
+  device_list = [] if not device else [device]
+
   # Train with K-FAC.
   g_step = tf.train.get_or_create_global_step()
   optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
@@ -265,8 +268,8 @@ def minimize_loss_single_machine(loss,
       damping=0.001,
       layer_collection=layer_collection,
       placement_strategy="round_robin",
-      cov_devices=[device],
-      inv_devices=[device],
+      cov_devices=device_list,
+      inv_devices=device_list,
       momentum=0.9)
 
   with tf.device(device):
@@ -288,7 +291,7 @@ def minimize_loss_single_machine(loss,
 def minimize_loss_single_machine_manual(loss,
                                         accuracy,
                                         layer_collection,
-                                        device="/cpu:0",
+                                        device=None,
                                         session_config=None):
   """Minimize loss with K-FAC on a single machine(Illustrative purpose only).
 
@@ -303,13 +306,16 @@ def minimize_loss_single_machine_manual(loss,
     accuracy: 0-D Tensor. Accuracy of classifier on current minibatch.
     layer_collection: LayerCollection instance describing model architecture.
       Used by K-FAC to construct preconditioner.
-    device: string, Either '/cpu:0' or '/gpu:0'. The covaraince and invserse
-      update ops are run on this device.
+    device: string or None. The covariance and inverse update ops are run on
+      this device. If empty or None, the default device will be used.
+      (Default: None)
     session_config: None or tf.ConfigProto. Configuration for tf.Session().
 
   Returns:
     final value for 'accuracy'.
   """
+  device_list = [] if not device else [device]
+
   # Train with K-FAC.
   g_step = tf.train.get_or_create_global_step()
   optimizer = kfac.KfacOptimizer(
@@ -318,8 +324,8 @@ def minimize_loss_single_machine_manual(loss,
       damping=0.001,
       layer_collection=layer_collection,
       placement_strategy="round_robin",
-      cov_devices=[device],
-      inv_devices=[device],
+      cov_devices=device_list,
+      inv_devices=device_list,
       momentum=0.9)
   (cov_update_thunks,
    inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
@@ -560,7 +566,7 @@ def distributed_grads_and_ops_dedicated_workers(
 def train_mnist_single_machine(data_dir,
                                num_epochs,
                                use_fake_data=False,
-                               device="/gpu:0",
+                               device=None,
                                manual_op_exec=False):
   """Train a ConvNet on MNIST.
 
@@ -568,8 +574,9 @@ def train_mnist_single_machine(data_dir,
     data_dir: string. Directory to read MNIST examples from.
     num_epochs: int. Number of passes to make over the training set.
     use_fake_data: bool. If True, generate a synthetic dataset.
-    device: string, Either '/cpu:0' or '/gpu:0'. The covaraince and inverse
-      update ops are run on this device.
+    device: string or None. The covariance and inverse update ops are run on
+      this device. If empty or None, the default device will be used.
+      (Default: None)
     manual_op_exec: bool, If `True` then `minimize_loss_single_machine_manual`
       is called for training which handles inverse and covariance computation.
       This is shown only for illustrative purpose. Otherwise
@@ -603,33 +610,27 @@ def train_mnist_single_machine(data_dir,
 
 
 def train_mnist_multitower(data_dir, num_epochs, num_towers,
-                           use_fake_data=True, devices=None):
+                           devices, use_fake_data=True,
+                           session_config=None):
   """Train a ConvNet on MNIST.
 
   Training data is split equally among the towers. Each tower computes loss on
   its own batch of data and the loss is aggregated on the CPU. The model
   variables are placed on first tower. The covariance and inverse update ops
-  and variables are placed on GPUs in a round robin manner.
+  and variables are placed on specified devices in a round robin manner.
 
   Args:
     data_dir: string. Directory to read MNIST examples from.
     num_epochs: int. Number of passes to make over the training set.
-    num_towers: int. Number of CPUs to split inference across.
+    num_towers: int. Number of towers.
     use_fake_data: bool. If True, generate a synthetic dataset.
-    devices: string, Either list of CPU or GPU. The covaraince and inverse
-      update ops are run on this device.
+    devices: list of strings. List of devices to place the towers.
+    session_config: None or tf.ConfigProto. Configuration for tf.Session().
 
   Returns:
     accuracy of model on the final minibatch of training data.
   """
-  if devices:
-    device_count = {"GPU": num_towers}
-  else:
-    device_count = {"CPU": num_towers}
-
-  devices = devices or [
-      "/cpu:{}".format(tower_id) for tower_id in range(num_towers)
-  ]
+  num_towers = 1 if not devices else len(devices)
   # Load a dataset.
   tf.logging.info("Loading MNIST into memory.")
   tower_batch_size = 128
@@ -669,12 +670,6 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
   accuracy = tf.reduce_mean(accuracies)
 
   # Fit model.
-
-  session_config = tf.ConfigProto(
-      allow_soft_placement=False,
-      device_count=device_count,
-  )
-
   g_step = tf.train.get_or_create_global_step()
   optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=_INVERT_EVERY,

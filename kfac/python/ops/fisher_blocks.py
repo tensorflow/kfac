@@ -96,9 +96,11 @@ def compute_pi_tracenorm(left_cov, right_cov):
   # other norm. This works out the same in the ratio.
   left_norm = left_cov.trace() * int(right_cov.domain_dimension)
   right_norm = right_cov.trace() * int(left_cov.domain_dimension)
-  assert_positive = tf.assert_positive(
-      right_norm,
-      message="PI computation, trace of right cov matrix should be positive")
+  # GPU doesn't support assert so we allow TF to allocate this op automatically.
+  with tf.device(None):
+    assert_positive = tf.assert_positive(
+        right_norm,
+        message="PI computation, trace of right cov matrix should be positive")
   with tf.control_dependencies([assert_positive]):
     pi = tf.sqrt(left_norm / right_norm)
   return pi
@@ -900,7 +902,9 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
                strides=None,
                dilation_rate=None,
                data_format=None,
-               extract_patches_fn=None):
+               extract_patches_fn=None,
+               sub_sample_inputs=None,
+               sub_sample_patches=None):
     """Creates a ConvKFCBasicFB block.
 
     Args:
@@ -921,6 +925,10 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
       extract_patches_fn: str or None. Name of function that extracts image
         patches. One of "extract_convolution_patches", "extract_image_patches",
         "extract_pointwise_conv2d_patches".
+      sub_sample_inputs: `bool`. If True, then subsample the inputs from which
+        the image patches are extracted. (Default: None)
+      sub_sample_patches: `bool`, If `True` then subsample the extracted
+        patches. (Default: None)
     """
     self._padding = padding
     self._strides = maybe_tuple(strides)
@@ -931,6 +939,9 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
 
     fltr = params[0] if self._has_bias else params
     self._filter_shape = tuple(fltr.shape.as_list())
+
+    self._sub_sample_inputs = sub_sample_inputs
+    self._sub_sample_patches = sub_sample_patches
 
     super(ConvKFCBasicFB, self).__init__(layer_collection)
 
@@ -947,7 +958,7 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
         fisher_factors.ConvInputKroneckerFactor,
         (inputs, self._filter_shape, self._padding, self._strides,
          self._dilation_rate, self._data_format, self._extract_patches_fn,
-         self._has_bias))
+         self._has_bias, self._sub_sample_inputs, self._sub_sample_patches))
     self._output_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvOutputKroneckerFactor, (grads_list,))
 

@@ -40,10 +40,10 @@ class RoundRobinPlacementMixin(object):
     Args:
       cov_devices: Iterable of device strings (e.g. '/gpu:0'). Covariance
         computations will be placed on these devices in a round-robin fashion.
-        Can be None, which means that no devices are specified.
+        Can be None or empty, which means that no devices are specified.
       inv_devices: Iterable of device strings (e.g. '/gpu:0'). Inversion
         computations will be placed on these devices in a round-robin fashion.
-        Can be None, which means that no devices are specified.
+        Can be None or empty, which means that no devices are specified.
       **kwargs: Pass through arguments.
 
     """
