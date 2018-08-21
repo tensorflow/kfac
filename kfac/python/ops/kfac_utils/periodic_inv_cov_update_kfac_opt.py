@@ -75,15 +75,25 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         counter)
     with tf.control_dependencies([prev_counter]):
       update_counter = tf.assign_add(counter, 1, name="update_counter")
-      do_cov_updates = tf.cond(
-          tf.equal(tf.mod(prev_counter, self._cov_update_every), 0),
+      # GPU doesn't support mod so we allow TF to allocate this op
+      # automatically.
+      with tf.device(None):
+        should_do_cov_updates = tf.equal(tf.mod(prev_counter,
+                                                self._cov_update_every), 0)
+      maybe_cov_updates = tf.cond(
+          should_do_cov_updates,
           lambda: tf.group([thunk() for thunk in cov_update_thunks]),
           tf.no_op)
-    with tf.control_dependencies([do_cov_updates, update_counter]):
-      do_inv_updates = tf.cond(
-          tf.equal(tf.mod(prev_counter, self._invert_every), 0),
+    with tf.control_dependencies([maybe_cov_updates, update_counter]):
+      # GPU doesn't support mod so we allow TF to allocate this op
+      # automatically.
+      with tf.device(None):
+        should_do_inv_updates = tf.equal(tf.mod(prev_counter,
+                                                self._invert_every), 0)
+      maybe_inv_updates = tf.cond(
+          should_do_inv_updates,
           lambda: tf.group([thunk() for thunk in inv_update_thunks]), tf.no_op)
-      with tf.control_dependencies([do_inv_updates]):
+      with tf.control_dependencies([maybe_inv_updates]):
         return super(PeriodicInvCovUpdateKfacOpt, self).apply_gradients(
             grads_and_vars=grads_and_vars,
             global_step=global_step,

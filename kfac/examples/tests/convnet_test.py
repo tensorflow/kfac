@@ -143,10 +143,22 @@ class ConvNetTest(tf.test.TestCase):
           data_dir=None, num_epochs=1, use_fake_data=True, device="/cpu:0")
 
   def testTrainMnistMultitower(self):
+    # For some reason the following configuration option allows this code to
+    # run when there is only one CPU on the machine. Maybe by asking for two
+    # TensorFlow makes a "virtual CPU" using multi-threading. Thankfully, this
+    # shouldn't be needed if your machine actually has all devices that you
+    # ask for.
+    session_config = tf.ConfigProto(device_count={"CPU": 2})
+
     with tf.Graph().as_default():
       # Ensure model training doesn't crash.
       convnet.train_mnist_multitower(
-          data_dir=None, num_epochs=1, num_towers=2, use_fake_data=True)
+          data_dir=None,
+          num_epochs=1,
+          num_towers=2,
+          devices=("/cpu:0", "/cpu:1"),
+          use_fake_data=True,
+          session_config=session_config)
 
   def testTrainMnistDistributed(self):
     with tf.Graph().as_default():

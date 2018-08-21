@@ -655,7 +655,9 @@ class LayerCollection(object):
                       data_format=None,
                       dilations=None,
                       approx=None,
-                      reuse=VARIABLE_SCOPE):
+                      reuse=VARIABLE_SCOPE,
+                      sub_sample_inputs=None,
+                      sub_sample_patches=None):
     """Registers a call to tf.nn.conv2d().
 
     Args:
@@ -679,6 +681,10 @@ class LayerCollection(object):
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
         (Default: "VARIABLE_SCOPE")
+      sub_sample_inputs: `bool`. If True, then subsample the inputs from which
+        the image patches are extracted. (Default: None)
+      sub_sample_patches: `bool`, If `True` then subsample the extracted
+        patches. (Default: None)
 
     Raises:
       ValueError: For improper value to 'approx'.
@@ -704,7 +710,9 @@ class LayerCollection(object):
               strides=strides,
               data_format=data_format,
               dilation_rate=dilations,
-              extract_patches_fn="extract_image_patches"),
+              extract_patches_fn="extract_image_patches",
+              sub_sample_inputs=sub_sample_inputs,
+              sub_sample_patches=sub_sample_patches),
           reuse=reuse)
     elif approx == APPROX_DIAGONAL_NAME:
       assert strides[0] == strides[-1] == 1

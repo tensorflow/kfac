@@ -32,7 +32,8 @@ from kfac.python.ops import fisher_factors as ff
 # were chosen when these used to be the defaults.
 ff.set_global_constants(init_covariances_at_zero=False,
                         zero_debias=False,
-                        init_inverses_at_zero=False)
+                        init_inverses_at_zero=False,
+                        max_num_patches_per_dimension=1.0)
 
 
 def make_damping_func(damping):
@@ -835,9 +836,9 @@ class ConvInputKroneckerFactorTest(ConvFactorTestCase):
       patches_1 = tf.constant(1, shape=(10, 2))
       patches_2 = tf.constant(1, shape=(10, 8))
       patches_3 = tf.constant(1, shape=(3, 3))
-      patches_1_sub = ff._subsample_for_cov_computation(patches_1)
-      patches_2_sub = ff._subsample_for_cov_computation(patches_2)
-      patches_3_sub = ff._subsample_for_cov_computation(patches_3)
+      patches_1_sub = ff._subsample_patches(patches_1)
+      patches_2_sub = ff._subsample_patches(patches_2)
+      patches_3_sub = ff._subsample_patches(patches_3)
       patches_1_sub_batch_size = patches_1_sub.shape.as_list()[0]
       patches_2_sub_batch_size = patches_2_sub.shape.as_list()[0]
       patches_3_sub_batch_size = patches_3_sub.shape.as_list()[0]
