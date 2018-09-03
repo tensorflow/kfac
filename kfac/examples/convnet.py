@@ -700,6 +700,8 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
         tf.logging.info("global_step: %d | loss: %f | accuracy: %s",
                         global_step_, loss_, accuracy_)
 
+  return accuracy_
+
 
 def train_mnist_distributed_sync_replicas(task_id,
                                           is_chief,
