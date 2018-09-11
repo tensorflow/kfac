@@ -24,7 +24,7 @@ import tensorflow as tf
 from tensorflow.python.ops.linalg import linear_operator_util as lou
 from kfac.python.ops import utils
 
-linalg = tf.contrib.linalg
+linalg = tf.linalg
 
 
 class LinearOperatorExtras(object):  # pylint: disable=missing-docstring
