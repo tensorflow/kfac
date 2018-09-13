@@ -56,23 +56,46 @@ class CurvatureMatrixVectorProductComputer(object):
   products.
   """
 
-  def __init__(self, losses, wrt_tensors):
+  def __init__(self, layer_collection, wrt_tensors,
+               colocate_gradients_with_ops=True):
     """Create a CurvatureMatrixVectorProductComputer object.
 
     Args:
-      losses: A list of LossFunction instances whose sum defines the total loss.
+      layer_collection: A LayerCollection object where the desired loss
+        functions are registered (possibly with weighing factors).
       wrt_tensors: A list of Tensors to compute the differential quantities
         (defining the matrices) with respect to.  See class description for more
         info.
+      colocate_gradients_with_ops: Whether we should request gradients be
+          colocated with their respective ops. (Default: True)
     """
-    self._losses = losses
-    self._inputs_to_losses = list(loss.inputs for loss in losses)
-    self._inputs_to_losses_flat = nest.flatten(self._inputs_to_losses)
+    self._layer_collection = layer_collection
     self._wrt_tensors = wrt_tensors
+    self._colocate_gradients_with_ops = colocate_gradients_with_ops
+
+  @property
+  def _loss_colocation_ops(self):
+    return self._layer_collection.loss_colocation_ops
+
+  @property
+  def _losses(self):
+    return self._layer_collection.losses
+
+  @property
+  def _inputs_to_losses(self):
+    return list(loss.inputs for loss in self._losses)
+
+  @property
+  def _inputs_to_losses_flat(self):
+    return nest.flatten(self._inputs_to_losses)
 
   @property
   def _total_loss(self):
-    return tf.add_n(tuple(loss.evaluate() for loss in self._losses))
+    vals = []
+    for loss in self._losses:
+      with tf.colocate_with(self._loss_colocation_ops[loss]):
+        vals.append(loss.evaluate())
+    return tf.add_n(tuple(vals))
 
   # Jacobian multiplication functions:
   def _multiply_jacobian(self, vecs):
@@ -81,7 +104,8 @@ class CurvatureMatrixVectorProductComputer(object):
     # what we want for Jacobians).
     jacobian_vecs_flat = utils.fwd_gradients(
         self._inputs_to_losses_flat, self._wrt_tensors, grad_xs=vecs,
-        stop_gradients=self._wrt_tensors)
+        stop_gradients=self._wrt_tensors,
+        colocate_gradients_with_ops=self._colocate_gradients_with_ops)
     return nest.pack_sequence_as(self._inputs_to_losses, jacobian_vecs_flat)
 
   def _multiply_jacobian_transpose(self, loss_vecs):
@@ -93,7 +117,8 @@ class CurvatureMatrixVectorProductComputer(object):
         self._inputs_to_losses_flat,
         self._wrt_tensors,
         grad_ys=loss_vecs_flat,
-        stop_gradients=self._wrt_tensors)
+        stop_gradients=self._wrt_tensors,
+        colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
   # Losses Fisher/Hessian multiplication functions:
   def _multiply_loss_fisher(self, loss_vecs):
@@ -102,35 +127,37 @@ class CurvatureMatrixVectorProductComputer(object):
         loss.multiply_fisher(loss_vec)
         for loss, loss_vec in zip(self._losses, loss_vecs))
 
+  def _multiply_across_losses(self, mult_func, vecs):
+    products = []
+    for loss, vec in zip(self._losses, vecs):
+      with tf.colocate_with(self._loss_colocation_ops[loss]):
+        products.append(mult_func(loss, vec))
+    return tuple(products)
+
   def _multiply_loss_fisher_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of Fisher of total loss."""
-    return tuple(
-        loss.multiply_fisher_factor(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_inner_vecs))
+    mult_func = lambda loss, vec: loss.multiply_fisher_factor(vec)
+    return self._multiply_across_losses(mult_func, loss_inner_vecs)
 
   def _multiply_loss_fisher_factor_transpose(self, loss_vecs):
     """Multiply loss_vecs by transpose factor of Fisher of total loss."""
-    return tuple(
-        loss.multiply_fisher_factor_transpose(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_vecs))
+    mult_func = lambda loss, vec: loss.multiply_fisher_factor_transpose(vec)
+    return self._multiply_across_losses(mult_func, loss_vecs)
 
   def _multiply_loss_hessian(self, loss_vecs):
     """Multiply loss_vecs by Hessian of total loss."""
-    return tuple(
-        loss.multiply_hessian(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_vecs))
+    mult_func = lambda loss, vec: loss.multiply_hessian(vec)
+    return self._multiply_across_losses(mult_func, loss_vecs)
 
   def _multiply_loss_hessian_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of Hessian of total loss."""
-    return tuple(
-        loss.multiply_hessian_factor(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_inner_vecs))
+    mult_func = lambda loss, vec: loss.multiply_hessian_factor(vec)
+    return self._multiply_across_losses(mult_func, loss_inner_vecs)
 
   def _multiply_loss_hessian_factor_transpose(self, loss_vecs):
     """Multiply loss_vecs by transpose factor of Hessian of total loss."""
-    return tuple(
-        loss.multiply_hessian_factor_transpose(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_vecs))
+    mult_func = lambda loss, vec: loss.multiply_hessian_factor_transpose(vec)
+    return self._multiply_across_losses(mult_func, loss_vecs)
 
   # Matrix-vector product functions:
   def multiply_fisher(self, vecs):
@@ -153,9 +180,13 @@ class CurvatureMatrixVectorProductComputer(object):
   def multiply_hessian(self, vecs):
     """Multiply vecs by Hessian of total loss."""
     return tf.gradients(
-        tf.gradients(self._total_loss, self._wrt_tensors),
+        tf.gradients(
+            self._total_loss,
+            self._wrt_tensors,
+            colocate_gradients_with_ops=self._colocate_gradients_with_ops),
         self._wrt_tensors,
-        grad_ys=vecs)
+        grad_ys=vecs,
+        colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
   def multiply_generalized_gauss_newton(self, vecs):
     """Multiply vecs by generalized Gauss-Newton of total loss."""

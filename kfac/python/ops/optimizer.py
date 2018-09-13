@@ -467,8 +467,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                     = qmodel(alpha*precon_grad + mu*prev_update) - L(theta).
     """
 
-    cmvpc = cmvp.CurvatureMatrixVectorProductComputer(self.layers.losses,
-                                                      variables)
+    cmvpc = cmvp.CurvatureMatrixVectorProductComputer(
+        self.layers,
+        variables,
+        colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
     # compute the matrix-vector products with the transposed Fisher factor
     fft_precon_grads = cmvpc.multiply_fisher_factor_transpose(precon_grads)
