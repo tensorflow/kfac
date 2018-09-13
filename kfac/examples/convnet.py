@@ -716,7 +716,7 @@ def train_mnist_distributed_sync_replicas(task_id,
     data_dir: string. Directory to read MNIST examples from.
     num_epochs: int. Number of passes to make over the training set.
     op_strategy: `string`, Strategy to run the covariance and inverse
-      ops. If op_strategy == `chief_worker` then covaraiance and inverse
+      ops. If op_strategy == `chief_worker` then covariance and inverse
       update ops are run on chief worker otherwise they are run on dedicated
       workers.
 

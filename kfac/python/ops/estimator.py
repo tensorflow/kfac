@@ -98,8 +98,8 @@ class FisherEstimator(object):
           gradient. (Higher damping means the update looks more like a standard
           gradient update - see Tikhonov regularization.)
       layer_collection: Either layer collection object or a function which
-          returns an instance to `LayerCollection` object, which holds the
-          Fisher blocks, kronecker factors, and losses associated with the
+          returns an instance to `LayerCollection` object, which holds for the
+          Fisher blocks, Kronecker factors, and losses associated with the
           graph.
       exps: List of floats or ints. These represent the different matrix
           powers of the approximate Fisher that the FisherEstimator will be able
@@ -413,7 +413,7 @@ class FisherEstimator(object):
   def get_cov_vars(self):
     """Returns all covariance variables associated with each Fisher factor.
 
-    Note the returned list also includes additional factor specific covaraince
+    Note the returned list also includes additional factor specific covariance
     variables.
 
     Returns: List of list. The number of inner lists is equal to number of
@@ -425,7 +425,7 @@ class FisherEstimator(object):
   def get_inv_vars(self):
     """Returns all covariance variables associated with each Fisher factor.
 
-    Note the returned list also includes additional factor specific covaraince
+    Note the returned list also includes additional factor specific covariance
     variables.
 
     Returns: List of list. The number of inner lists is equal to number of
@@ -472,7 +472,7 @@ class FisherEstimator(object):
 
   def _get_grads_lists_gradients(self, tensors):
     # Passing in a list of loss values is better than passing in the sum as
-    # the latter creates unnessesary ops on the default device
+    # the latter creates unnecessary ops on the default device
     grads_flat = tf.gradients(
         self.layers.eval_losses_on_samples(),
         nest.flatten(tensors),
