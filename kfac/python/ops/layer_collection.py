@@ -985,7 +985,7 @@ class LayerCollection(object):
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
         word 'use' here has a completely different meaning to "use in the graph"
-        as it perturns to the 'inputs', 'outputs', and 'num_uses' arguments.)
+        as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
     Raises:
@@ -1055,7 +1055,7 @@ class LayerCollection(object):
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
         word 'use' here has a completely different meaning to "use in the graph"
-        as it perturns to the 'inputs', 'outputs', and 'num_uses' arguments.)
+        as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
     Raises:
@@ -1126,7 +1126,7 @@ class LayerCollection(object):
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
         word 'use' here has a completely different meaning to "use in the graph"
-        as it perturns to the 'inputs', 'outputs', and 'num_uses' arguments.)
+        as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
     Raises:
