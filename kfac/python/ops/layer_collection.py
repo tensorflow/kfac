@@ -188,6 +188,7 @@ class LayerCollection(object):
         APPROX_KRONECKER_INDEP_NAME)
     self._default_embedding_multi_approximation = APPROX_KRONECKER_INDEP_NAME
     self.loss_colocation_ops = {}
+    self.loss_coeffs = {}
     self._vars_to_uses = defaultdict(lambda: 0)
 
     with tf.variable_scope(None, default_name=name) as scope:
@@ -355,6 +356,7 @@ class LayerCollection(object):
                              colocation_op,
                              base_name,
                              name=None,
+                             coeff=1.0,
                              reuse=VARIABLE_SCOPE):
     """Registers a LossFunction object.
 
@@ -365,6 +367,8 @@ class LayerCollection(object):
         is None.
       name: (OPTIONAL) str or None. Unique name for this loss function. If None,
         a new name is generated. (Default: None)
+      coeff: (OPTIONAL) a scalar. coefficient on the loss function
+        (Default: 1.0)
       reuse: (OPTIONAL) bool or str.  If True, adds 'loss' as an additional
         tower for the existing loss function.
 
@@ -391,6 +395,12 @@ class LayerCollection(object):
         raise KeyError(
             "Unable to find loss function named {}. Register a new loss "
             "function with reuse=False.".format(name))
+
+      if self.loss_coeffs[loss_list[0]] != coeff:
+        raise ValueError(
+            "Reused loss function's coeff didn't match previous supplied "
+            "value.")
+
     else:
       if name in self._loss_dict:
         raise KeyError(
@@ -402,6 +412,7 @@ class LayerCollection(object):
 
     loss_list.append(loss)
     self.loss_colocation_ops[loss] = colocation_op
+    self.loss_coeffs[loss] = coeff
 
   def _get_use_count_map(self):
     """Returns a dict mapping variables to their number of registrations."""
@@ -524,27 +535,35 @@ class LayerCollection(object):
     inputs_to_losses = nest.flatten(tuple(loss.inputs for loss in self.losses))
     self._subgraph = utils.SubGraph(inputs_to_losses)
 
-  def eval_losses(self):
-    """Return evaluated losses (colocated with inputs to losses)."""
+  def eval_losses(self, target_mode="data", coeff_mode="regular"):
+    """Returns evaluated losses (colocated with inputs to losses)."""
     evals = []
     for loss in self.losses:
       with tf.colocate_with(self.loss_colocation_ops[loss]):
-        evals.append(loss.evaluate())
+        if coeff_mode == "regular":
+          multiplier = self.loss_coeffs[loss]
+        elif coeff_mode == "sqrt":
+          multiplier = tf.sqrt(self.loss_coeffs[loss])
+        elif coeff_mode == "off":
+          multiplier = 1.0
+        else:
+          raise ValueError("coeff_mode must be in ['regular', 'sqrt', 'off']")
+
+        if target_mode == "data":
+          evals.append(multiplier * loss.evaluate())
+        elif target_mode == "sample":
+          evals.append(multiplier * loss.evaluate_on_sample())
+        else:
+          raise ValueError("target_mode must be in ['data', 'sample']")
     return evals
 
-  def eval_losses_on_samples(self):
-    """Return losses evaluated on samples (colocated with inputs to losses)."""
-    evals = []
-    for loss in self.losses:
-      with tf.colocate_with(self.loss_colocation_ops[loss]):
-        evals.append(loss.evaluate_on_sample())
-    return evals
+  def total_loss(self, coeff_mode="regular"):
+    return tf.add_n(self.eval_losses(target_mode="data",
+                                     coeff_mode=coeff_mode))
 
-  def total_loss(self):
-    return tf.add_n(self.eval_losses())
-
-  def total_sampled_loss(self):
-    return tf.add_n(self.eval_losses_on_samples())
+  def total_sampled_loss(self, coeff_mode="regular"):
+    return tf.add_n(self.eval_losses(target_mode="sample",
+                                     coeff_mode=coeff_mode))
 
   def _get_linked_approx(self, params):
     """If params were linked, return their specified approximation."""
@@ -1156,6 +1175,7 @@ class LayerCollection(object):
                                                    seed=None,
                                                    targets=None,
                                                    name=None,
+                                                   coeff=1.0,
                                                    reuse=VARIABLE_SCOPE):
     """Registers a categorical predictive distribution.
 
@@ -1163,22 +1183,63 @@ class LayerCollection(object):
       logits: The logits of the distribution (i.e. its parameters).
       seed: The seed for the RNG (for debugging) (Default: None)
       targets: (OPTIONAL) The targets for the loss function.  Only required if
-        one wants to call total_loss() instead of total_sampled_loss().
-        total_loss() is required, for example, to estimate the
-        "empirical Fisher" (instead of the true Fisher).
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
         (Default: None)
       name: (OPTIONAL) str or None. Unique name for this loss function. If None,
         a new name is generated. (Default: None)
-      reuse: bool or str.  If True, this adds 'logits' as an additional
-        mini-batch/tower of inputs to the loss-function/predictive distribution
-        (which must have already been registered). If "VARIABLE_SCOPE", use
-        tf.get_variable_scope().reuse. (Default: "VARIABLE_SCOPE")
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        log prob loss associated with this distribution. The Fisher will be
+        multiplied by the corresponding factor. This is NOT equivalent to
+        changing the temperature of the distribution since we don't renormalize
+        the log prob in the objective function. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'logits' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
     """
     loss = lf.CategoricalLogitsNegativeLogProbLoss(logits, targets=targets,
                                                    seed=seed)
     self.register_loss_function(loss, logits,
                                 "categorical_predictive_distribution",
-                                name=name, reuse=reuse)
+                                name=name, coeff=coeff, reuse=reuse)
+
+  def register_softmax_cross_entropy(self,
+                                     logits,
+                                     seed=None,
+                                     targets=None,
+                                     name=None,
+                                     coeff=1.0,
+                                     reuse=VARIABLE_SCOPE):
+    """Registers a softmax cross-entropy loss function.
+
+    This is similar to register_categorical_predictive_distribution but
+    without the explicit probabilistic interpretation. It behaves identically
+    for now.
+
+    Args:
+      logits: The logits of the distribution (i.e. its parameters).
+      seed: The seed for the RNG (for debugging) (Default: None)
+      targets: (OPTIONAL) The targets for the loss function.  Only required if
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
+        (Default: None)
+      name: (OPTIONAL) str or None. Unique name for this loss function. If None,
+        a new name is generated. (Default: None)
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        loss function by. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'logits' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
+    """
+    loss = lf.CategoricalLogitsNegativeLogProbLoss(logits, targets=targets,
+                                                   seed=seed)
+    self.register_loss_function(loss, logits,
+                                "softmax_cross_entropy_loss",
+                                name=name, coeff=coeff, reuse=reuse)
 
   def register_normal_predictive_distribution(self,
                                               mean,
@@ -1186,39 +1247,88 @@ class LayerCollection(object):
                                               seed=None,
                                               targets=None,
                                               name=None,
+                                              coeff=1.0,
                                               reuse=VARIABLE_SCOPE):
     """Registers a normal predictive distribution.
 
+    This corresponds to a squared error loss of the form
+       coeff/(2*var) * ||target - prediction||^2
+
     Args:
       mean: The mean vector defining the distribution.
-      var: The variance (must be a scalar).  Note that the default value of
-        0.5 corresponds to a standard squared error loss (target -
-        prediction)**2. If your squared error loss is of the form
-        0.5*(target - prediction)**2 you should use var=1.0. (Default: 0.5)
+      var: The variance (must be a scalar).Note that the default value of
+        0.5 corresponds to a standard squared error loss coeff*||target -
+        prediction||^2. If you want your squared error loss to be of the form
+        0.5*coeff*||target - prediction||^2 you should use var=1.0.
+        (Default: 0.5)
       seed: The seed for the RNG (for debugging) (Default: None)
       targets: (OPTIONAL) The targets for the loss function.  Only required if
-        one wants to call total_loss() instead of total_sampled_loss().
-        total_loss() is required, for example, to estimate the
-        "empirical Fisher" (instead of the true Fisher).
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
         (Default: None)
       name: (OPTIONAL) str or None. Unique name for this loss function. If None,
         a new name is generated. (Default: None)
-      reuse: bool or str.  If True, this adds 'mean' and 'var' as an additional
-        mini-batch/tower of inputs to the loss-function/predictive distribution
-        (which must have already been registered). If "VARIABLE_SCOPE", use
-        tf.get_variable_scope().reuse. (Default: "VARIABLE_SCOPE")
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        log prob loss associated with this distribution. The Fisher will be
+        multiplied by the corresponding factor. In general this is NOT
+        equivalent to changing the temperature of the distribution, but in the
+        case of normal distributions it may be. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'mean' and 'var' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
     """
     loss = lf.NormalMeanNegativeLogProbLoss(mean, var, targets=targets,
                                             seed=seed)
     self.register_loss_function(loss, mean,
                                 "normal_predictive_distribution",
-                                name=name, reuse=reuse)
+                                name=name, coeff=coeff, reuse=reuse)
+
+  def register_squared_error_loss(self,
+                                  prediction,
+                                  seed=None,
+                                  targets=None,
+                                  name=None,
+                                  coeff=1.0,
+                                  reuse=VARIABLE_SCOPE):
+    """Registers a squared error loss function.
+
+    This assumes the squared error loss of the form ||target - prediction||^2,
+    averaged across the mini-batch. If your loss uses a coefficient of 0.5
+    (tf.nn.l2_loss does this, for example) you need to set the "coeff" argument
+    to reflect this.
+
+    Args:
+      prediction: The prediction.
+      seed: The seed for the RNG (for debugging) (Default: None)
+      targets: (OPTIONAL) The targets for the loss function.  Only required if
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
+        (Default: None)
+      name: (OPTIONAL) str or None. Unique name for this loss function. If None,
+        a new name is generated. (Default: None)
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        loss function by. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'prediction' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
+    """
+    loss = lf.NormalMeanNegativeLogProbLoss(prediction, var=0.5,
+                                            targets=targets,
+                                            seed=seed)
+    self.register_loss_function(loss, prediction,
+                                "squared_error_loss",
+                                name=name, coeff=coeff, reuse=reuse)
 
   def register_multi_bernoulli_predictive_distribution(self,
                                                        logits,
                                                        seed=None,
                                                        targets=None,
                                                        name=None,
+                                                       coeff=1.0,
                                                        reuse=VARIABLE_SCOPE):
     """Registers a multi-Bernoulli predictive distribution.
 
@@ -1226,22 +1336,63 @@ class LayerCollection(object):
       logits: The logits of the distribution (i.e. its parameters).
       seed: The seed for the RNG (for debugging) (Default: None)
       targets: (OPTIONAL) The targets for the loss function.  Only required if
-        one wants to call total_loss() instead of total_sampled_loss().
-        total_loss() is required, for example, to estimate the
-        "empirical Fisher" (instead of the true Fisher).
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
         (Default: None)
       name: (OPTIONAL) str or None. Unique name for this loss function. If None,
         a new name is generated. (Default: None)
-      reuse: bool or str.  If True, this adds 'logits' as an additional
-        mini-batch/tower of inputs to the loss-function/predictive distribution
-        (which must have already been registered). If "VARIABLE_SCOPE", use
-        tf.get_variable_scope().reuse. (Default: "VARIABLE_SCOPE")
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        log prob loss associated with this distribution. The Fisher will be
+        multiplied by the corresponding factor. This is NOT equivalent to
+        changing the temperature of the distribution since we don't renormalize
+        the log prob in the objective function. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'logits' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
     """
     loss = lf.MultiBernoulliNegativeLogProbLoss(logits, targets=targets,
                                                 seed=seed)
     self.register_loss_function(loss, logits,
                                 "multi_bernoulli_predictive_distribution",
-                                name=name, reuse=reuse)
+                                name=name, coeff=coeff, reuse=reuse)
+
+  def register_sigmoid_cross_entropy_loss(self,
+                                          logits,
+                                          seed=None,
+                                          targets=None,
+                                          name=None,
+                                          coeff=1.0,
+                                          reuse=VARIABLE_SCOPE):
+    """Registers a sigmoid cross-entropy loss function.
+
+    This is similar to register_sigmoid_predictive_distribution but
+    without the explicit probabilistic interpretation. It behaves identically
+    for now.
+
+    Args:
+      logits: The logits of the distribution (i.e. its parameters).
+      seed: The seed for the RNG (for debugging) (Default: None)
+      targets: (OPTIONAL) The targets for the loss function.  Only required if
+        one wants to use the "empirical Fisher" instead of the true Fisher
+        (which is controlled by the 'estimation_mode' to the optimizer).
+        (Default: None)
+      name: (OPTIONAL) str or None. Unique name for this loss function. If None,
+        a new name is generated. (Default: None)
+      coeff: (OPTIONAL) a float or TF scalar. A coefficient to multiply the
+        loss function by. (Default: 1.0)
+      reuse: (OPTIONAL) bool or str.  If True, this adds 'logits' as an
+        additional mini-batch/tower of inputs to the loss-function/predictive
+        distribution (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
+    """
+    loss = lf.MultiBernoulliNegativeLogProbLoss(logits, targets=targets,
+                                                seed=seed)
+    self.register_loss_function(loss, logits,
+                                "sigmoid_cross_entropy_loss",
+                                name=name, coeff=coeff, reuse=reuse)
 
   def make_or_get_factor(self, cls, args):
     """Insert 'cls(args)' into 'self.fisher_factors' if not already present.
