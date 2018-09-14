@@ -43,4 +43,6 @@ PeriodicInvCovUpdateKfacOpt = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpd
 
 AsyncInvCovUpdateKfacOpt = async_inv_cov_update_kfac_opt.AsyncInvCovUpdateKfacOpt
 
+CurvatureMatrixVectorProductComputer = curvature_matrix_vector_products.CurvatureMatrixVectorProductComputer
+
 # pylint: enable=invalid-name, line-too-long
