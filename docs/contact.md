@@ -1,20 +1,25 @@
-
 Topic                | Contact
--------------------- | ------------
-**Questions**        | kfac-users@
-**Development Team** | kfac-dev@
+-------------------- | ---------------------
+**Questions**        | kfac-users@google.com
+**Development Team** | kfac-dev@google.com
 
-K-FAC core contributors:
+Primary contacts:
 
-*   Vikram Tankasali (tvikram@)
-*   James Martens (jamesmartens@)
-*   Alok Aggarwal (aloka@)
-*   Daniel Duckworth (duckworthd@)
-*   James Keeling (jtkeeling@)
+*   James Martens (jamesmartens@google.com)
+*   Vikram Tankasali (tvikram@google.com)
+
+Contributors (past and present):
+
+*   Alok Aggarwal (aloka@google.com)
+*   Daniel Duckworth (duckworthd@google.com)
+*   Dominik Grewe (dominikg@google.com)
+*   James Keeling (jtkeeling@google.com)
+*   James Martens (jamesmartens@google.com)
 *   Jimmy Ba (jba@cs.toronto.edu)
-*   Matthew Johnson (mattjj@)
-*   Noah Siegel (siegeln@)
-*   Olga Wichrowskaa (olganw@)
-*   Rishabh Kabra (rkabra@)
-*   Roger Grosse (rgrosse@)
-*   Zack Nado (znado@)
+*   Matthew Johnson (mattjj@google.com)
+*   Noah Siegel (siegeln@google.com)
+*   Olga Wichrowskaa (olganw@google.com)
+*   Rishabh Kabra (rkabra@google.com)
+*   Roger Grosse (rgrosse@google.com)
+*   Vikram Tankasali (tvikram@google.com)
+*   Zack Nado (znado@google.com)
