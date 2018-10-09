@@ -69,8 +69,10 @@ class ConvNetTest(tf.test.TestCase):
       y = tf.placeholder(tf.int64, [None])
       layer_collection = kfac.LayerCollection()
       loss, accuracy = convnet.build_model(
-          x, y, num_labels=5, layer_collection=layer_collection)
-
+          x, y, num_labels=5, layer_collection=layer_collection,
+          register_layers_manually=convnet._USE_MANUAL_REG)
+      if not convnet._USE_MANUAL_REG:
+        layer_collection.auto_register_layers()
       # Ensure layers and logits were registered.
       self.assertEqual(len(layer_collection.fisher_blocks), 3)
       self.assertEqual(len(layer_collection.losses), 1)

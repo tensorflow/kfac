@@ -63,6 +63,9 @@ _COV_UPDATE_EVERY = 1
 # Displays loss every _REPORT_EVERY iterations.
 _REPORT_EVERY = 10
 
+# Use manual registration
+_USE_MANUAL_REG = False
+
 
 def fc_layer(layer_id, inputs, output_size):
   """Builds a fully connected layer.
@@ -170,8 +173,7 @@ def build_model(examples,
                 labels,
                 num_labels,
                 layer_collection,
-                register_layers=True,
-                manual_registartion=False):
+                register_layers_manually=False):
   """Builds a ConvNet classification model.
 
   Args:
@@ -181,9 +183,8 @@ def build_model(examples,
       by softmax for each example.
     num_labels: int. Number of distinct values 'labels' can take on.
     layer_collection: LayerCollection instance. Layers will be registered here.
-    register_layers: bool, If True then register all trainable variables.
-    manual_registartion: bool, If True then manually register the layers instead
-      of relying on `graph_search`. This is shown just for demo purpose.
+    register_layers_manually: bool. If True then register the layers with
+      layer_collection manually. (Default: False)
 
   Returns:
     loss: 0-D Tensor representing loss to be minimized.
@@ -211,22 +212,15 @@ def build_model(examples,
     tf.summary.scalar("loss", loss)
     tf.summary.scalar("accuracy", accuracy)
 
-  layer_collection.register_categorical_predictive_distribution(
+  layer_collection.register_softmax_cross_entropy_loss(
       logits, name="logits")
-  if register_layers:
-    # Register parameters. K-FAC needs to know about the inputs, outputs, and
-    # parameters of each conv/fully connected layer and the logits powering the
-    # posterior probability over classes.
-    tf.logging.info("Building LayerCollection.")
-    # Manual registration is shown below just for demo purpose.
-    if manual_registartion:
-      layer_collection.register_conv2d(params0, (1, 1, 1, 1), "SAME", examples,
-                                       pre0)
-      layer_collection.register_conv2d(params2, (1, 1, 1, 1), "SAME", act1,
-                                       pre2)
-      layer_collection.register_fully_connected(params4, flat_act3, logits)
-    else:
-      layer_collection.auto_register_layers()
+
+  if register_layers_manually:
+    layer_collection.register_conv2d(params0, (1, 1, 1, 1), "SAME", examples,
+                                     pre0)
+    layer_collection.register_conv2d(params2, (1, 1, 1, 1), "SAME", act1,
+                                     pre2)
+    layer_collection.register_fully_connected(params4, flat_act3, logits)
 
   return loss, accuracy
 
@@ -598,7 +592,10 @@ def train_mnist_single_machine(data_dir,
   # Build a ConvNet.
   layer_collection = kfac.LayerCollection()
   loss, accuracy = build_model(
-      examples, labels, num_labels=10, layer_collection=layer_collection)
+      examples, labels, num_labels=10, layer_collection=layer_collection,
+      register_layers_manually=_USE_MANUAL_REG)
+  if not _USE_MANUAL_REG:
+    layer_collection.auto_register_layers()
 
   # Fit model.
   if manual_op_exec:
@@ -662,8 +659,12 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
                   labels[tower_id],
                   10,
                   layer_collection,
-                  register_layers=(tower_id == num_towers - 1)))
+                  register_layers_manually=_USE_MANUAL_REG))
   losses, accuracies = zip(*tower_results)
+  # When using multiple towers we only want to perform automatic
+  # registation once, after the final tower is made
+  if not _USE_MANUAL_REG:
+    layer_collection.auto_register_layers()
 
   # Average across towers.
   loss = tf.reduce_mean(losses)
@@ -741,7 +742,10 @@ def train_mnist_distributed_sync_replicas(task_id,
   layer_collection = kfac.LayerCollection()
   with tf.device(tf.train.replica_device_setter(num_ps_tasks)):
     loss, accuracy = build_model(
-        examples, labels, num_labels=10, layer_collection=layer_collection)
+        examples, labels, num_labels=10, layer_collection=layer_collection,
+        register_layers_manually=_USE_MANUAL_REG)
+  if not _USE_MANUAL_REG:
+    layer_collection.auto_register_layers()
 
   # Fit model.
   checkpoint_dir = None if data_dir is None else os.path.join(data_dir, "kfac")
@@ -803,7 +807,10 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
     # Build a ConvNet.
     layer_collection = kfac.LayerCollection()
     loss, accuracy = build_model(
-        features, labels, num_labels=10, layer_collection=layer_collection)
+        features, labels, num_labels=10, layer_collection=layer_collection,
+        register_layers_manually=_USE_MANUAL_REG)
+    if not _USE_MANUAL_REG:
+      layer_collection.auto_register_layers()
 
     # Train with K-FAC.
     global_step = tf.train.get_or_create_global_step()

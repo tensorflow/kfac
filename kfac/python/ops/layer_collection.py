@@ -982,28 +982,29 @@ class LayerCollection(object):
         this layer. Weight matrix should have shape [input_size, output_size].
         Bias should have shape [output_size].
       inputs: A list of Tensors, each of shape [batch_size, input_size]. Inputs
-        to layer. The list indexes each use in the graph (which might
+        to layer. The list indexes each use in the model (which might
         correspond to a "time-step" in an RNN). OR, can be single Tensor, of
         shape [num_uses * batch_size , input_size], which is a reshaped version
         of a Tensor of shape [num_uses, batch_size, input_size].
       outputs: A list of Tensors, the same length as 'inputs', each of shape
         [batch_size, output_size]. Outputs produced by layer. The list indexes
-        each use in the graph (which might correspond to a "time-step" in an
+        each use in the model (which might correspond to a "time-step" in an
         RNN). Needs to correspond with the order used in 'inputs'.  OR, can be
         a single Tensor of shape [num_uses * batch_size, output_size], which is
         a reshaped version of a Tensor of shape [num_uses, batch_size,
         output_size].
-      num_uses: int or None. The number uses/time-steps in the graph where the
+      num_uses: int or None. The number uses/time-steps in the model where the
         layer appears. Only needed if both inputs and outputs are given in the
         single Tensor format. (Default: None)
-      approx: str or None. If not None, must be of "kron_indep", "kron_series_1"
-        or "kron_series_2". The Fisher approximation to use. If None the default
-        value is used. (Default: None)
+      approx: str or None. If not None, must be one of "kron_indep",
+        "kron_series_1" or "kron_series_2". The Fisher approximation to use.
+        If None the default value is used (which starts out as "kron_indep").
+        (Default: None)
       reuse: bool or str.  If True, this adds inputs and outputs as an
         additional mini-batch/tower of data to use when estimating the Fisher
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
-        word 'use' here has a completely different meaning to "use in the graph"
+        word 'use' here has a completely different meaning to "use in the model"
         as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
@@ -1049,31 +1050,31 @@ class LayerCollection(object):
       strides: 1-D Tensor of length 4. Strides for convolution kernel.
       padding: string. see tf.nn.conv2d for valid values.
       inputs: A list of Tensors, each of shape [batch_size, height, width,
-        in_channels]. Inputs to layer. The list indexes each use in the graph
+        in_channels]. Inputs to layer. The list indexes each use in the model
         (which might correspond to a "time-step" in an RNN). OR, can be single
         Tensor, of shape [num_uses * batch_size, height, width, in_channels],
         which is a reshaped version of a Tensor of shape [num_uses, batch_size,
         height, width, in_channels].
       outputs: A list of Tensors, each of shape [batch_size, height, width,
         out_channels]. Output produced by layer. The list indexes each use
-        in the graph (which might correspond to a "time-step" in an RNN).
+        in the model (which might correspond to a "time-step" in an RNN).
         Needs to correspond with the order used in 'inputs'.  OR, can be a
         single Tensor, of shape [num_uses * batch_size, height, width,
         out_channels], which is a reshaped version of a Tensor of shape
         [num_uses, batch_size, height, width, out_channels].
-      num_uses: int or None. The number uses/time-steps in the graph where the
+      num_uses: int or None. The number uses/time-steps in the model where the
         layer appears. Only needed if both inputs and outputs are given in the
         single Tensor format. (Default: None)
       data_format: str or None. Format of data.
       dilations: List of 4 ints. Dilations along each dimension.
-      approx: str or None. If not None must by "kron_indep". The Fisher
-        approximation to use. If None the default value is used.
-        (Default: None)
+      approx: str or None. If not None must be "kron_indep". The Fisher
+        approximation to use. If None the default value is used (which starts
+        out as "kron_indep"). (Default: None)
       reuse: bool or str.  If True, this adds inputs and outputs as an
         additional mini-batch/tower of data to use when estimating the Fisher
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
-        word 'use' here has a completely different meaning to "use in the graph"
+        word 'use' here has a completely different meaning to "use in the model"
         as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
@@ -1123,18 +1124,18 @@ class LayerCollection(object):
       params: Embedding matrix of shape [vocab_size, embedding_size].
       inputs: A list of Tensors, each of shape [batch_size, input_size] and
         dtype int32. Indices into embedding matrix. The list indexes each use
-        in the graph (which might correspond to a "time-step" in an RNN).
+        in the model (which might correspond to a "time-step" in an RNN).
         OR, can be single Tensor, of shape [num_uses, batch_size, input_size],
         which is a reshaped version of a Tensor of shape [num_uses, batch_size,
         input_size].
       outputs: A list of Tensors, each of shape [batch_size, embedding_size].
-        Outputs produced by layer. The list indexes each use in the graph
+        Outputs produced by layer. The list indexes each use in the model
         (which might correspond to a "time-step" in an RNN). Needs to
         correspond with the order used in 'inputs'. OR, can be a
         single Tensor, of shape [num_uses * batch_size, embedding_size], which
         is a reshaped version of a Tensor of shape [num_uses, batch_size,
         embedding_size].
-      num_uses: int or None. The number uses/time-steps in the graph where the
+      num_uses: int or None. The number uses/time-steps in the model where the
         layer appears. Only needed if both inputs and outputs are given in the
         single Tensor format. (Default: None)
       approx: str or None. If not None must by "kron_indep". The Fisher
@@ -1144,7 +1145,7 @@ class LayerCollection(object):
         additional mini-batch/tower of data to use when estimating the Fisher
         block for this layer (which must have already been registered). If
         "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.  (Note that the
-        word 'use' here has a completely different meaning to "use in the graph"
+        word 'use' here has a completely different meaning to "use in the model"
         as it pertains to the 'inputs', 'outputs', and 'num_uses' arguments.)
         (Default: "VARIABLE_SCOPE")
 
@@ -1205,13 +1206,13 @@ class LayerCollection(object):
                                 "categorical_predictive_distribution",
                                 name=name, coeff=coeff, reuse=reuse)
 
-  def register_softmax_cross_entropy(self,
-                                     logits,
-                                     seed=None,
-                                     targets=None,
-                                     name=None,
-                                     coeff=1.0,
-                                     reuse=VARIABLE_SCOPE):
+  def register_softmax_cross_entropy_loss(self,
+                                          logits,
+                                          seed=None,
+                                          targets=None,
+                                          name=None,
+                                          coeff=1.0,
+                                          reuse=VARIABLE_SCOPE):
     """Registers a softmax cross-entropy loss function.
 
     This is similar to register_categorical_predictive_distribution but
