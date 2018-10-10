@@ -649,6 +649,10 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
 
     super(ConvDiagonalFB, self).__init__(layer_collection)
 
+  @property
+  def _factor_implementation(self):
+    return fisher_factors.ConvDiagonalFactor
+
   def instantiate_factors(self, grads_list, damping):
     inputs, grads_list = self._process_data(grads_list)
 
@@ -659,7 +663,7 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
                                              self._padding)
 
     self._factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.ConvDiagonalFactor,
+        self._factor_implementation,
         (inputs, grads_list, self._filter_shape, self._strides, self._padding,
          self._data_format, self._dilations, self._has_bias))
 
