@@ -23,6 +23,7 @@ import abc
 # Dependency imports
 import six
 import tensorflow as tf
+import tensorflow_probability as tfp
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -350,7 +351,7 @@ class DistributionNegativeLogProbLoss(NegativeLogProbLoss):
 
   @abc.abstractproperty
   def dist(self):
-    """The underlying tf.distributions.Distribution."""
+    """The underlying tfp.distributions.Distribution."""
     pass
 
   def _evaluate(self, targets):
@@ -386,7 +387,7 @@ class NormalMeanNegativeLogProbLoss(DistributionNegativeLogProbLoss,
 
   @property
   def dist(self):
-    return tf.distributions.Normal(loc=self._mean, scale=tf.sqrt(self._var))
+    return tfp.distributions.Normal(loc=self._mean, scale=tf.sqrt(self._var))
 
   @property
   def params(self):
@@ -450,7 +451,7 @@ class NormalMeanVarianceNegativeLogProbLoss(DistributionNegativeLogProbLoss):
 
   @property
   def dist(self):
-    return tf.distributions.Normal(
+    return tfp.distributions.Normal(
         loc=self._mean, scale=tf.sqrt(self._variance))
 
   @property
@@ -584,7 +585,7 @@ class CategoricalLogitsNegativeLogProbLoss(DistributionNegativeLogProbLoss,
 
   @property
   def dist(self):
-    return tf.distributions.Categorical(logits=self._logits)
+    return tfp.distributions.Categorical(logits=self._logits)
 
   @property
   def _probs(self):
@@ -659,7 +660,7 @@ class MultiBernoulliNegativeLogProbLoss(DistributionNegativeLogProbLoss,
 
   @property
   def dist(self):
-    return tf.distributions.Bernoulli(logits=self._logits)
+    return tfp.distributions.Bernoulli(logits=self._logits)
 
   @property
   def _probs(self):
@@ -739,4 +740,4 @@ class OnehotCategoricalLogitsNegativeLogProbLoss(
 
   @property
   def dist(self):
-    return tf.contrib.distributions.OneHotCategorical(logits=self._logits)
+    return tfp.distributions.OneHotCategorical(logits=self._logits)
