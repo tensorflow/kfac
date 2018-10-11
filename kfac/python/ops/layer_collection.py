@@ -45,44 +45,9 @@ APPROX_KRONECKER_NAME = "kron"
 APPROX_DIAGONAL_NAME = "diagonal"
 APPROX_FULL_NAME = "full"
 
-_GENERIC_APPROX_TO_BLOCK_TYPES = {
-    APPROX_FULL_NAME: fb.FullFB,
-    APPROX_DIAGONAL_NAME: fb.NaiveDiagonalFB,
-}
-
-_FULLY_CONNECTED_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_NAME: fb.FullyConnectedKFACBasicFB,
-    APPROX_DIAGONAL_NAME: fb.FullyConnectedDiagonalFB,
-}
-
-_CONV2D_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_NAME: fb.ConvKFCBasicFB,
-    APPROX_DIAGONAL_NAME: fb.ConvDiagonalFB,
-}
-
-_EMBEDDING_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_NAME: fb.EmbeddingKFACFB
-}
-
 APPROX_KRONECKER_INDEP_NAME = "kron_indep"
 APPROX_KRONECKER_SERIES_1_NAME = "kron_series_1"
 APPROX_KRONECKER_SERIES_2_NAME = "kron_series_2"
-
-_FULLY_CONNECTED_MULTI_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_INDEP_NAME: fb.FullyConnectedMultiIndepFB,
-    APPROX_KRONECKER_SERIES_1_NAME: partial(fb.FullyConnectedSeriesFB,
-                                            option=1),
-    APPROX_KRONECKER_SERIES_2_NAME: partial(fb.FullyConnectedSeriesFB,
-                                            option=2)
-}
-
-_CONV2D_MULTI_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_INDEP_NAME: fb.ConvKFCBasicMultiIndepFB
-}
-
-_EMBEDDING_MULTI_APPROX_TO_BLOCK_TYPES = {
-    APPROX_KRONECKER_INDEP_NAME: fb.EmbeddingKFACMultiIndepFB
-}
 
 # Possible value for 'reuse' keyword argument. Sets 'reuse' to
 # tf.get_variable_scope().reuse.
@@ -194,6 +159,41 @@ class LayerCollection(object):
     with tf.variable_scope(None, default_name=name) as scope:
       self._var_scope = scope.name
 
+    self._generic_approx_to_block_types = {
+        APPROX_FULL_NAME: fb.FullFB,
+        APPROX_DIAGONAL_NAME: fb.NaiveDiagonalFB,
+    }
+
+    self._fully_connected_approx_to_blocks_types = {
+        APPROX_KRONECKER_NAME: fb.FullyConnectedKFACBasicFB,
+        APPROX_DIAGONAL_NAME: fb.FullyConnectedDiagonalFB,
+    }
+
+    self._conv2d_approx_to_block_types = {
+        APPROX_KRONECKER_NAME: fb.ConvKFCBasicFB,
+        APPROX_DIAGONAL_NAME: fb.ConvDiagonalFB,
+    }
+
+    self._embedding_approx_to_block_types = {
+        APPROX_KRONECKER_NAME: fb.EmbeddingKFACFB
+    }
+
+    self._fully_connected_multi_approx_to_block_types = {
+        APPROX_KRONECKER_INDEP_NAME: fb.FullyConnectedMultiIndepFB,
+        APPROX_KRONECKER_SERIES_1_NAME: partial(fb.FullyConnectedSeriesFB,
+                                                option=1),
+        APPROX_KRONECKER_SERIES_2_NAME: partial(fb.FullyConnectedSeriesFB,
+                                                option=2)
+    }
+
+    self._conv2d_multi_approx_to_block_types = {
+        APPROX_KRONECKER_INDEP_NAME: fb.ConvKFCBasicMultiIndepFB
+    }
+
+    self._embedding_multi_approx_to_block_types = {
+        APPROX_KRONECKER_INDEP_NAME: fb.EmbeddingKFACMultiIndepFB
+    }
+
   @property
   def losses(self):
     """Tuple of LossFunction objects registered with this LayerCollection."""
@@ -242,7 +242,7 @@ class LayerCollection(object):
     return self._default_generic_approximation
 
   def set_default_generic_approximation(self, value):
-    if value not in _GENERIC_APPROX_TO_BLOCK_TYPES:
+    if value not in self._generic_approx_to_block_types:
       raise ValueError(
           "{} is not a valid approximation for generic variables.".format(
               value))
@@ -253,7 +253,7 @@ class LayerCollection(object):
     return self._default_fully_connected_approximation
 
   def set_default_fully_connected_approximation(self, value):
-    if value not in _FULLY_CONNECTED_APPROX_TO_BLOCK_TYPES:
+    if value not in self._fully_connected_approx_to_blocks_types:
       raise ValueError(
           "{} is not a valid approximation for fully connected layers.".format(
               value))
@@ -264,7 +264,7 @@ class LayerCollection(object):
     return self._default_conv2d_approximation
 
   def set_default_conv2d_approximation(self, value):
-    if value not in _CONV2D_APPROX_TO_BLOCK_TYPES:
+    if value not in self._conv2d_approx_to_block_types:
       raise ValueError(
           "{} is not a valid approximation for 2d convolutional layers.".format(
               value))
@@ -275,7 +275,7 @@ class LayerCollection(object):
     return self._default_fully_connected_multi_approximation
 
   def set_default_fully_connected_multi_approximation(self, value):
-    if value not in _FULLY_CONNECTED_MULTI_APPROX_TO_BLOCK_TYPES:
+    if value not in self._fully_connected_multi_approx_to_block_types:
       raise ValueError("{} is not a valid approximation for a fully-connected "
                        "multi layer.".format(value))
     self._default_fully_connected_multi_approximation = value
@@ -613,7 +613,7 @@ class LayerCollection(object):
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_embedding_approximation,
-        _EMBEDDING_APPROX_TO_BLOCK_TYPES)
+        self._embedding_approx_to_block_types)
 
     if isinstance(params, (tuple, list)):
       raise ValueError("Bias not supported.")
@@ -656,7 +656,7 @@ class LayerCollection(object):
 
     block_type, approx = self._get_block_type(
         params, approx, self.default_fully_connected_approximation,
-        _FULLY_CONNECTED_APPROX_TO_BLOCK_TYPES)
+        self._fully_connected_approx_to_blocks_types)
 
     has_bias = isinstance(params, (tuple, list))
     block = self.register_block(params, block_type(self, has_bias=has_bias),
@@ -713,7 +713,7 @@ class LayerCollection(object):
 
     block_type, approx = self._get_block_type(
         params, approx, self.default_conv2d_approximation,
-        _CONV2D_APPROX_TO_BLOCK_TYPES)
+        self._conv2d_approx_to_block_types)
 
     # It feels bad to pass in configuration that has to do with the internal
     # implementation.  And then we can't use the same constructor for both
@@ -961,7 +961,7 @@ class LayerCollection(object):
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_generic_approximation,
-        _GENERIC_APPROX_TO_BLOCK_TYPES)
+        self._generic_approx_to_block_types)
 
     block = self.register_block(params, block_type(self, params), reuse=reuse)
     block.register_additional_tower(batch_size)
@@ -1013,7 +1013,7 @@ class LayerCollection(object):
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_fully_connected_multi_approximation,
-        _FULLY_CONNECTED_MULTI_APPROX_TO_BLOCK_TYPES)
+        self._fully_connected_multi_approx_to_block_types)
 
     # TODO(b/70283649): something along the lines of find_canonical_output
     # should be added back in here (and for the other block types, arguably).
@@ -1085,7 +1085,7 @@ class LayerCollection(object):
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_conv2d_multi_approximation,
-        _CONV2D_MULTI_APPROX_TO_BLOCK_TYPES)
+        self._conv2d_multi_approx_to_block_types)
 
     block = self.register_block(
         params,
@@ -1156,7 +1156,7 @@ class LayerCollection(object):
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_embedding_multi_approximation,
-        _EMBEDDING_MULTI_APPROX_TO_BLOCK_TYPES)
+        self._embedding_multi_approx_to_block_types)
 
     if isinstance(params, (tuple, list)):
       raise ValueError("Bias not supported.")
