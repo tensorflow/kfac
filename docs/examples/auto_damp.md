@@ -42,12 +42,9 @@ data.
 ## 2. Build optimizer and set damping parameters
 
 ```python
-  optimizer = kfac_opt.PeriodicInvCovUpdateKfacOpt(
-      invert_every=FLAGS.inverse_update_period,
-      cov_update_every=FLAGS.cov_update_period,
+  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       learning_rate=1.0,
       damping=150.,
-      cov_ema_decay=0.95,
       momentum=0.95,
       layer_collection=layer_collection,
       batch_size=batch_size

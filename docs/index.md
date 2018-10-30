@@ -59,7 +59,7 @@ loss = tf.reduce_mean(
 
 # Register loss.
 layer_collection = kfac.LayerCollection()
-layer_collection.register_categorical_predictive_distribution(logits)
+layer_collection.register_softmax_cross_entropy_loss(logits)
 
 # Register layers.
 layer_collection.auto_register_layers()

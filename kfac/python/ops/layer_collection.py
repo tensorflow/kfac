@@ -289,9 +289,18 @@ class LayerCollection(object):
     return self._default_embedding_multi_approximation
 
   def auto_register_layers(self, var_list=None, **kwargs):
-    """Registers all layers automatically."""
+    """Registers all layers automatically.
+
+    Args:
+      var_list: A list of variables that the automatic registration should
+        consider. If you have some trainable variables (i.e. those included in
+        tf.trainable_variables()) that you don't want included you need to pass
+        in this list. (Default: tf.trainable_variables()).
+      **kwargs: Additional arguments to pass to graph_search.register_layers().
+        See that method's docstring for more details.
+    """
     if var_list is None:
-      var_list = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+      var_list = tf.trainable_variables()
     graph_search.register_layers(self, var_list, **kwargs)
 
   def register_block(self, layer_key, fisher_block, reuse=VARIABLE_SCOPE):
@@ -1180,6 +1189,13 @@ class LayerCollection(object):
                                                    reuse=VARIABLE_SCOPE):
     """Registers a categorical predictive distribution.
 
+    Corresponds to losses computed using
+    tf.nn.softmax_cross_entropy_with_logits.
+
+    Note that this is distinct from
+    register_multi_bernoulli_predictive_distribution and should not be confused
+    with it.
+
     Args:
       logits: The logits of the distribution (i.e. its parameters).
       seed: The seed for the RNG (for debugging) (Default: None)
@@ -1215,9 +1231,13 @@ class LayerCollection(object):
                                           reuse=VARIABLE_SCOPE):
     """Registers a softmax cross-entropy loss function.
 
-    This is similar to register_categorical_predictive_distribution but
-    without the explicit probabilistic interpretation. It behaves identically
-    for now.
+    Corresponds to losses computed using
+    tf.nn.softmax_cross_entropy_with_logits.
+
+    Note that this is distinct from register_sigmoid_cross_entropy_loss and
+    should not be confused with it. It is similar to
+    register_categorical_predictive_distribution but without the explicit
+    probabilistic interpretation. It behaves identically for now.
 
     Args:
       logits: The logits of the distribution (i.e. its parameters).
@@ -1333,6 +1353,14 @@ class LayerCollection(object):
                                                        reuse=VARIABLE_SCOPE):
     """Registers a multi-Bernoulli predictive distribution.
 
+    Corresponds to losses computed using
+    tf.nn.sigmoid_cross_entropy_with_logits.
+
+    Note that this is distinct from
+    register_categorical_predictive_distribution and should not be confused
+    with it.
+
+
     Args:
       logits: The logits of the distribution (i.e. its parameters).
       seed: The seed for the RNG (for debugging) (Default: None)
@@ -1368,9 +1396,13 @@ class LayerCollection(object):
                                           reuse=VARIABLE_SCOPE):
     """Registers a sigmoid cross-entropy loss function.
 
-    This is similar to register_sigmoid_predictive_distribution but
-    without the explicit probabilistic interpretation. It behaves identically
-    for now.
+    Corresponds to losses computed using
+    tf.nn.sigmoid_cross_entropy_with_logits.
+
+    Note that this is distinct from register_softmax_cross_entropy_loss and
+    should not be confused with it. It is similar to
+    register_multi_bernoulli_predictive_distribution but without the explicit
+    probabilistic interpretation. It behaves identically for now.
 
     Args:
       logits: The logits of the distribution (i.e. its parameters).

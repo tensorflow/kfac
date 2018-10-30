@@ -45,7 +45,12 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                batch_size=None,
                placement_strategy=None,
                **kwargs):
-    """Initializes the KFAC optimizer with the given settings.
+    """Initializes the K-FAC optimizer with the given settings.
+
+      NOTE: this is a base class for K-FAC optimizers that offers full control
+      over the execution of K-FAC's various ops.  For a more fool-proof /
+      automated version see for example PeriodicInvCovUpdateKfacOpt.
+
 
     Args:
       learning_rate: The base learning rate for the optimizer.  Should probably
@@ -65,9 +70,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           initialization.
       cov_ema_decay: (Optional) The decay factor used when calculating the
         covariance estimate moving averages. (Default: 0.95)
-      var_list: Optional list or tuple of variables to train. Defaults to the
-          list of variables collected in the graph under the key
-          `GraphKeys.TRAINABLE_VARIABLES`.
+      var_list: Optional list or tuple of variables to train. Defaults to
+        tf.trainable_variables.
       momentum: The momentum decay constant to use. Only applies when
           momentum_type is 'regular' or 'adam'. (Default: 0.9)
       momentum_type: The type of momentum to use in this optimizer, one of

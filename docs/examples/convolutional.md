@@ -58,15 +58,15 @@ here.
 `layer_collection.auto_register_layers` automatically registers all the layers
 for typical/standard models. However one must still manually register the loss
 function. In the case of cross-entropy loss functions on softmaxes this amounts
-to calling `layer_collection.register_categorical_predictive_distribution` with
-the logits as an argument. Note that the inputs/outputs of non-parameterized
-layers such as max pooling and reshaping _do not_ need to be registered.
+to calling `layer_collection.register_softmax_cross_entropy_loss` with the
+logits as an argument. Note that the inputs/outputs of non-parameterized layers
+such as max pooling and reshaping _do not_ need to be registered.
 
 ```python
   # Register parameters with graph_search.
   tf.logging.info("Building KFAC Optimizer.")
-  layer_collection = lc.LayerCollection()
-  layer_collection.register_categorical_predictive_distribution(logits)
+  layer_collection = kfac.LayerCollection()
+  layer_collection.register_softmax_cross_entropy_loss(logits)
   # Set the layer at params0 to use a diagonal approximation
   # instead of default Kronecker factor based approximation.
   layer_collection.define_linked_parameters(
@@ -96,8 +96,8 @@ connected (or linear) layers, `register_fully_connected`.
 ```python
   # Register parameters manually.
   tf.logging.info("Building KFAC Optimizer.")
-  layer_collection = lc.LayerCollection()
-  layer_collection.register_categorical_predictive_distribution(logits)
+  layer_collection = kfac.LayerCollection()
+  layer_collection.register_softmax_cross_entropy_loss(logits)
 
   layer_collection.register_conv2d(params0, (1, 1, 1, 1), "SAME", examples,
                                    pre0,
@@ -130,15 +130,14 @@ https://github.com/tensorflow/kfac/tree/master/docs/examples/parameters.md
 ```python
   # Train with K-FAC.
   global_step = tf.train.get_or_create_global_step()
-  optimizer = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt(
+  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
+      learning_rate=0.0001,
+      damping=0.001,
+      momentum=0.9,
+      cov_ema_decay=0.95,
       invert_every=10,
       cov_update_every=1,
-      learning_rate=0.0001,
-      cov_ema_decay=0.95,
-      damping=0.001,
-      layer_collection=layer_collection,
-      placement_strategy="round_robin",
-      momentum=0.9)
+      layer_collection=layer_collection)
   train_op = optimizer.minimize(loss, global_step=global_step)
 ```
 

@@ -315,7 +315,12 @@ def register_subgraph_layers(layer_collection,
         raise AmbiguousRegistrationError(
             'Need to register {} as generic, batch size must be specified.'.
             format(variable))
-      warnings.warn('Registering {} as generic'.format(variable))
+      warnings.warn('Registering {} as generic because graph scanner '
+                    'couldn''t match a pattern for it. This can sometimes '
+                    'be caused by the variable not being present in the graph '
+                    'terminating at the registered losses. In such a case you '
+                    'should specify the list of variables '
+                    'explicitly.'.format(variable))
       layer_collection.register_generic(variable, batch_size, reuse=reuse)
 
 
