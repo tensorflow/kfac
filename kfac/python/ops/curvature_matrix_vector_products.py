@@ -212,6 +212,17 @@ class CurvatureMatrixVectorProductComputer(object):
     return tuple(loss.fisher_factor_inner_shape for loss in self._losses)
 
   @property
+  def fisher_factor_inner_static_shapes(self):
+    """Shapes required by multiply_fisher_factor."""
+    return tuple(loss.fisher_factor_inner_static_shape for loss in self._losses)
+
+  @property
   def generalized_gauss_newton_factor_inner_shapes(self):
     """Shapes required by multiply_generalized_gauss_newton_factor."""
     return tuple(loss.hessian_factor_inner_shape for loss in self._losses)
+
+  @property
+  def generalized_gauss_newton_factor_inner_static_shapes(self):
+    """Shapes required by multiply_generalized_gauss_newton_factor."""
+    return tuple(loss.hessian_factor_inner_static_shape
+                 for loss in self._losses)
