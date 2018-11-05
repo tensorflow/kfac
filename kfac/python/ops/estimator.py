@@ -106,22 +106,25 @@ class FisherEstimator(object):
           to multiply vectors by. If the user asks for a matrix power other
           one of these (or 1, which is always supported), there will be a
           failure. (Default: (-1,))
-      estimation_mode: The type of estimator to use for the Fishers.  Can be
-          'gradients', 'empirical', 'curvature_prop', or 'exact'.
-          (Default: 'gradients').  'gradients' is the basic estimation approach
-          from the original K-FAC paper.  'empirical' computes the 'empirical'
-          Fisher information matrix (which uses the data's distribution for the
-          targets, as opposed to the true Fisher which uses the model's
-          distribution) and requires that each registered loss have specified
-          targets. 'curvature_propagation' is a method which estimates the
-          Fisher using self-products of random 1/-1 vectors times "half-factors"
-          of the Fisher, as described here: https://arxiv.org/abs/1206.6464 .
-          Finally, 'exact' is the obvious generalization of Curvature
-          Propagation to compute the exact Fisher (modulo any additional
-          diagonal or Kronecker approximations) by looping over one-hot vectors
-          for each coordinate of the output instead of using 1/-1 vectors.  It
-          is more expensive to compute than the other three options by a factor
-          equal to the output dimension, roughly speaking.
+      estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
+          'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
+          'exact', or 'exact_GGN'. (Default: 'gradients'). 'gradients' is the
+          basic estimation approach from the original K-FAC paper.
+          'empirical' computes the 'empirical' Fisher information matrix (which
+          uses the data's distribution for the targets, as opposed to the true
+          Fisher which uses the model's distribution) and requires that each
+          registered loss have specified targets. 'curvature_propagation' is a
+          method which estimates the Fisher using self-products of random 1/-1
+          vectors times "half-factors" of the Fisher, as described here:
+          https://arxiv.org/abs/1206.6464 . 'exact' is the obvious
+          generalization of Curvature Propagation to compute the exact Fisher
+          (modulo any additional diagonal or Kronecker approximations) by
+          looping over one-hot vectors for each coordinate of the output
+          instead of using 1/-1 vectors.  It is more expensive to compute than
+          the other three options by a factor equal to the output dimension,
+          roughly speaking. Finally, 'curvature_prop_GGN' and 'exact_GGN' are
+          analogous to 'curvature_prop' and 'exact', but estimate the
+          Generalized Gauss-Newton matrix (GGN).
       colocate_gradients_with_ops: Whether we should request gradients be
           colocated with their respective ops. (Default: True)
       name: A string. A name given to this estimator, which is added to the
@@ -145,7 +148,17 @@ class FisherEstimator(object):
         "gradients": self._get_grads_lists_gradients,
         "empirical": self._get_grads_lists_empirical,
         "curvature_prop": self._get_grads_lists_curvature_prop,
-        "exact": self._get_grads_lists_exact
+        "curvature_prop_GGN": self._get_grads_lists_curvature_prop,
+        "exact": self._get_grads_lists_exact,
+        "exact_GGN": self._get_grads_lists_exact
+    }
+    self._gradient_fns_extra_args = {
+        "gradients": {},
+        "empirical": {},
+        "curvature_prop": {"mode": "fisher"},
+        "curvature_prop_GGN": {"mode": "GGN"},
+        "exact": {"mode": "fisher"},
+        "exact_GGN": {"mode": "GGN"},
     }
     self._colocate_gradients_with_ops = colocate_gradients_with_ops
 
@@ -336,7 +349,8 @@ class FisherEstimator(object):
 
     try:
       grads_lists = self._gradient_fns[self._estimation_mode](
-          tensors_to_compute_grads)
+          tensors_to_compute_grads,
+          **self._gradient_fns_extra_args[self._estimation_mode])
     except KeyError:
       raise ValueError("Unrecognized value {} for estimation_mode.".format(
           self._estimation_mode))
@@ -490,18 +504,26 @@ class FisherEstimator(object):
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
     return tuple((grad,) for grad in grads_all)
 
-  def _get_transformed_random_signs(self):
+  def _get_transformed_random_signs(self, mode="fisher"):
+    """No docstring required."""
+    if mode == "fisher":
+      mult_func = lambda loss, index: loss.multiply_fisher_factor(index)
+      inner_shape_func = lambda loss: loss.fisher_factor_inner_shape
+    elif mode == "GGN":
+      mult_func = lambda loss, index: loss.multiply_hessian_factor(index)
+      inner_shape_func = lambda loss: loss.hessian_factor_inner_shape
+
     transformed_random_signs = []
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
         transformed_random_signs.append(
-            tf.sqrt(self.layers.loss_coeffs[loss])*loss.multiply_fisher_factor(
-                utils.generate_random_signs(loss.fisher_factor_inner_shape)))
+            tf.sqrt(self.layers.loss_coeffs[loss])*mult_func(
+                loss, utils.generate_random_signs(inner_shape_func(loss))))
     return transformed_random_signs
 
-  def _get_grads_lists_curvature_prop(self, tensors):
+  def _get_grads_lists_curvature_prop(self, tensors, mode="fisher"):
     loss_inputs = list(loss.inputs for loss in self.layers.losses)
-    transformed_random_signs = self._get_transformed_random_signs()
+    transformed_random_signs = self._get_transformed_random_signs(mode=mode)
     grads_flat = tf.gradients(
         nest.flatten(loss_inputs),
         nest.flatten(tensors),
@@ -510,16 +532,26 @@ class FisherEstimator(object):
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
     return tuple((grad,) for grad in grads_all)
 
-  def _get_grads_lists_exact(self, tensors):
+  def _get_grads_lists_exact(self, tensors, mode="fisher"):
     """No docstring required."""
+    if mode == "fisher":
+      # pylint: disable=g-long-lambda
+      mult_func = (lambda loss, index:
+                   loss.multiply_fisher_factor_replicated_one_hot(index))
+      inner_shape_func = lambda loss: loss.fisher_factor_inner_static_shape
+    elif mode == "GGN":
+      # pylint: disable=g-long-lambda
+      mult_func = (lambda loss, index:
+                   loss.multiply_hessian_factor_replicated_one_hot(index))
+      inner_shape_func = lambda loss: loss.fisher_hessian_inner_static_shape
+
     # Loop over all coordinates of all losses.
     grads_all = []
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
-        for index in np.ndindex(*loss.fisher_factor_inner_static_shape[1:]):
+        for index in np.ndindex(*inner_shape_func(loss)[1:]):
           transformed_one_hot = (tf.sqrt(self.layers.loss_coeffs[loss]) *
-                                 loss.multiply_fisher_factor_replicated_one_hot(
-                                     index))
+                                 mult_func(loss, index))
           grads_flat = tf.gradients(
               loss.inputs,
               nest.flatten(tensors),
