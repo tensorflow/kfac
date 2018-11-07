@@ -653,12 +653,15 @@ class AccumulatorVariable(object):
           dtype=var.dtype if var is not None else acc_var_dtype,
           trainable=False)
 
-      self._counter = tf.get_variable(
-          shape=(),
-          dtype=tf.int32,
-          name=name+"acc_counter",
-          initializer=tf.zeros_initializer(),
-          trainable=False)
+      # GPU doesn't support int32 var so we allow TF to allocate this op
+      # automatically.
+      with tf.device(None):
+        self._counter = tf.get_variable(
+            shape=(),
+            dtype=tf.int32,
+            name=name+"acc_counter",
+            initializer=tf.zeros_initializer(),
+            trainable=False)
 
   def accumulate(self,
                  value,
