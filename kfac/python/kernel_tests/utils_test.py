@@ -394,5 +394,87 @@ class UtilsTest(tf.test.TestCase):
       self.assertAllClose(outputs_.flatten(), outputs_flat_.flatten())
 
 
+class AccumulatorVariableTest(tf.test.TestCase):
+
+  def test_assign_to_var(self):
+    var_shape = (2, 3)
+    var = tf.get_variable(
+        shape=var_shape,
+        name='orig_var',
+        dtype=tf.float32,
+        initializer=tf.zeros_initializer())
+    acc_var = utils.AccumulatorVariable(
+        name='test_acc_var', var=var)
+    values = [
+        3. * tf.ones(shape=var.shape), 6. * tf.ones(shape=var.shape),
+        11. * tf.ones(shape=var.shape)
+    ]
+    acc_ops = []
+    accc_ops_after_reset = []
+    for value in values:
+      acc_ops.append(
+          acc_var.accumulate(value, num_steps_for_update=len(values)))
+
+    for value in values[:2]:
+      accc_ops_after_reset.append(
+          acc_var.accumulate(value, num_steps_for_update=2))
+
+    init_op = tf.global_variables_initializer()
+    with self.test_session() as sess:
+      sess.run([init_op])
+      for acc_op in acc_ops:
+        sess.run(acc_op)
+
+      acc_value, acc_var_value = sess.run([var, acc_var.value])
+      self.assertAllEqual(acc_value, 20. * np.ones(shape=var_shape))
+      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+
+      for acc_op in accc_ops_after_reset:
+        sess.run(acc_op)
+
+      acc_value, acc_var_value = sess.run([var, acc_var.value])
+      self.assertAllEqual(acc_value, 9. * np.ones(shape=var_shape))
+      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+
+  def test_accumulation(self):
+    var_shape = (2, 3)
+    acc_var = utils.AccumulatorVariable(
+        name='test_acc_var', acc_var_shape=var_shape, acc_var_dtype=tf.float32)
+    values = [
+        2. * tf.ones(shape=var_shape), 3. * tf.ones(shape=var_shape),
+        10. * tf.ones(shape=var_shape)
+    ]
+    acc_ops = []
+    accc_ops_after_reset = []
+    for value in values:
+      acc_ops.append(
+          acc_var.accumulate(value, num_steps_for_update=len(values)))
+
+    for value in values[:2]:
+      accc_ops_after_reset.append(
+          acc_var.accumulate(value, num_steps_for_update=2))
+
+    init_op = tf.global_variables_initializer()
+    with self.test_session() as sess:
+      sess.run([init_op])
+      acc_value = None
+
+      for acc_op in acc_ops:
+        sess.run([acc_op])
+
+      acc_value, acc_var_value = sess.run(
+          [acc_var.accumulated_value, acc_var.value])
+      self.assertAllEqual(acc_value, 15. * np.ones(shape=var_shape))
+      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+
+      for acc_op in accc_ops_after_reset:
+        sess.run([acc_op])
+
+      acc_value, acc_var_value = sess.run(
+          [acc_var.accumulated_value, acc_var.value])
+      self.assertAllEqual(acc_value, 5. * np.ones(shape=var_shape))
+      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+
+
 if __name__ == '__main__':
   tf.test.main()

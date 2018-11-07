@@ -417,7 +417,8 @@ class FullFactorTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[0.75, 0.5], [0.5, 1.5]], new_cov)
 
 
@@ -450,7 +451,8 @@ class NaiveDiagonalFactorTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[0.75], [1.5]], new_cov)
 
 
@@ -475,7 +477,8 @@ class EmbeddingInputKroneckerFactorTest(tf.test.TestCase):
 
       with self.test_session() as sess:
         sess.run(tf.global_variables_initializer())
-        new_cov = sess.run(cov_update_op)
+        sess.run(cov_update_op)
+        new_cov = sess.run(factor.cov)
         self.assertAllClose(np.array([1., 1., 0., 0., 1.]) / 3., new_cov)
 
 
@@ -551,7 +554,8 @@ class ConvDiagonalFactorTest(tf.test.TestCase):
       # vectorized, squared.
       with self.test_session() as sess:
         sess.run(tf.global_variables_initializer())
-        cov = sess.run(cov_update_op)
+        sess.run(cov_update_op)
+        cov = sess.run(factor.cov)
         expected_cov = np.outer(inputs.flatten(), outputs_grad.flatten())**2
         self.assertAllClose(expected_cov, cov)
 
@@ -621,7 +625,8 @@ class FullyConnectedKroneckerFactorTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[3, 3.5, 1], [3.5, 5.5, 1.5], [1, 1.5, 1]], new_cov)
 
   def testMakeCovarianceUpdateOpNoBias(self):
@@ -632,7 +637,8 @@ class FullyConnectedKroneckerFactorTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[3, 3.5], [3.5, 5.5]], new_cov)
 
 
@@ -809,7 +815,8 @@ class ConvInputKroneckerFactorTest(ConvFactorTestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(0.))
+      sess.run(factor.make_covariance_update_op(0.))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose(
           [
               [(1. + 4.) / 2., (1. + 2.) / 2.],  #
@@ -828,7 +835,8 @@ class ConvInputKroneckerFactorTest(ConvFactorTestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(0.))
+      sess.run(factor.make_covariance_update_op(0.))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[(1. + 4.) / 2.]], new_cov)
 
   def testSubSample(self):
@@ -897,7 +905,8 @@ class ConvOutputKroneckerFactorTest(ConvFactorTestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[43, 46.5], [46.5, 51.5]], new_cov)
 
 
@@ -930,7 +939,8 @@ class FullyConnectedMultiKFTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[3, 3.5, 1], [3.5, 5.5, 1.5], [1, 1.5, 1]], new_cov)
 
   def testMakeCovarianceUpdateOpNoBias(self):
@@ -941,7 +951,8 @@ class FullyConnectedMultiKFTest(tf.test.TestCase):
       factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      new_cov = sess.run(factor.make_covariance_update_op(.5))
+      sess.run(factor.make_covariance_update_op(.5))
+      new_cov = sess.run(factor.cov)
       self.assertAllClose([[3, 3.5], [3.5, 5.5]], new_cov)
 
 

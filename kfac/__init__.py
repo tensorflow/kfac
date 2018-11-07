@@ -30,7 +30,9 @@ from kfac.python.ops import optimizer
 from kfac.python.ops import utils
 from kfac.python.ops.kfac_utils import async_inv_cov_update_kfac_opt
 from kfac.python.ops.kfac_utils import data_reader
+from kfac.python.ops.kfac_utils import kfac_multi_run_opt
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
+
 from kfac.python.ops.tensormatch import graph_matcher
 from kfac.python.ops.tensormatch import graph_search
 
@@ -40,8 +42,8 @@ from kfac.python.ops.tensormatch import graph_search
 LayerCollection = layer_collection.LayerCollection
 KfacOptimizer = optimizer.KfacOptimizer
 PeriodicInvCovUpdateKfacOpt = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt
-
 AsyncInvCovUpdateKfacOpt = async_inv_cov_update_kfac_opt.AsyncInvCovUpdateKfacOpt
+KfacMultiRunOpt = kfac_multi_run_opt.KfacMultiRunOpt
 
 CurvatureMatrixVectorProductComputer = curvature_matrix_vector_products.CurvatureMatrixVectorProductComputer
 

@@ -30,7 +30,21 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
   """Provides functionality to run covariance and inverse ops periodically.
 
   Creates KFAC optimizer with a `placement strategy`.
-  Also runs the covariance and inverse ops periodically.
+  Also runs the covariance and inverse ops periodically. The base class
+  does not provide a mechanism to automatically construct and run the covariance
+  and inverse ops, they must be created and run manually using
+  make_vars_and_create_op_thunks or create_ops_and_vars_thunks. This class
+  provides functionality to create these ops and runs them periodically whenever
+  optimizer.minimize op is run.
+
+  The inverse ops are run `invert_every` iterations and covariance statistics
+  are updated `cov_update_every` iterations. Ideally set
+  the `invert_every` to a multiple of `cov_update_every` so that the
+  inverses are computed after the covariance is updated. The higher the multiple
+  more the delay in using the computed covariance estimates in the KFAC update
+  step. Also computing the statistics and inverses periodically saves on
+  computation cost and a "reasonable" value often does not show any perforamnce
+  degradation compared to computing these quantitites every iteration.
   """
 
   def __init__(self,

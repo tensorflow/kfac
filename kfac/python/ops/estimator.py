@@ -79,6 +79,7 @@ class FisherEstimator(object):
                damping,
                layer_collection,
                exps=(-1,),
+               num_steps_per_cov_update=1,
                estimation_mode="gradients",
                colocate_gradients_with_ops=True,
                name="FisherEstimator",
@@ -106,6 +107,11 @@ class FisherEstimator(object):
           to multiply vectors by. If the user asks for a matrix power other
           one of these (or 1, which is always supported), there will be a
           failure. (Default: (-1,))
+      num_steps_per_cov_update: int, The updates to the covariance estimates
+        are accumulated for `num_steps_per_cov_update` steps before being
+        applied (using a decayed average). This is useful when accumulating
+        update information across multiple session.run calls.
+        (Default: 1)
       estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
           'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
           'exact', or 'exact_GGN'. (Default: 'gradients'). 'gradients' is the
@@ -144,6 +150,7 @@ class FisherEstimator(object):
     self._damping = damping
     self._estimation_mode = estimation_mode
     self._layer_collection = layer_collection
+    self._num_steps_per_cov_update = num_steps_per_cov_update
     self._gradient_fns = {
         "gradients": self._get_grads_lists_gradients,
         "empirical": self._get_grads_lists_empirical,
@@ -462,7 +469,9 @@ class FisherEstimator(object):
 
     def thunk():
       with tf.variable_scope(scope):
-        return factor.make_covariance_update_op(self._cov_ema_decay)
+        return factor.make_covariance_update_op(
+            self._cov_ema_decay,
+            num_steps_per_cov_update=self._num_steps_per_cov_update)
 
     return thunk
 

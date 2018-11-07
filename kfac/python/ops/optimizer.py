@@ -44,6 +44,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                colocate_gradients_with_ops=True,
                batch_size=None,
                placement_strategy=None,
+               num_steps_per_cov_update=1,
                **kwargs):
     """Initializes the K-FAC optimizer with the given settings.
 
@@ -93,6 +94,11 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       placement_strategy: string, Device placement strategy used when creating
         covariance variables, covariance ops, and inverse ops.
         (Default: `None`)
+      num_steps_per_cov_update: int, The updates to the covariance estimates
+        are accumulated for `num_steps_per_cov_update` steps before being
+        applied (using a decayed average). This is useful when accumulating
+        update information across multiple session.run calls.
+        (Default: 1)
       **kwargs: Arguments to be passed to specific placement
         strategy mixin. Check `placement.RoundRobinPlacementMixin` for example.
 
@@ -149,6 +155,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     self._norm_constraint = norm_constraint
     self._batch_size = batch_size
     self._placement_strategy = placement_strategy
+    self._num_steps_per_cov_update = num_steps_per_cov_update
 
     with tf.variable_scope(name):
       self._fisher_est = est.make_fisher_estimator(
@@ -160,6 +167,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           exps=(-1,),
           estimation_mode=self._estimation_mode,
           colocate_gradients_with_ops=self._colocate_gradients_with_ops,
+          num_steps_per_cov_update=num_steps_per_cov_update,
           **kwargs)
 
     super(KfacOptimizer, self).__init__(learning_rate, name=name)

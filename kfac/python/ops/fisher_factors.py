@@ -20,13 +20,12 @@ from __future__ import print_function
 
 import abc
 import contextlib
-# Dependency imports
 import math
+# Dependency imports
 import numpy as np
 import six
 import tensorflow as tf
 
-from tensorflow.python.training import moving_averages
 from tensorflow.python.util import nest
 from kfac.python.ops import linear_operator as lo
 from kfac.python.ops import utils
@@ -380,6 +379,7 @@ class FisherFactor(object):
 
   def __init__(self):
     self._cov = None
+    self._acc_cov = None
 
   @abc.abstractproperty
   def _var_scope(self):
@@ -435,6 +435,9 @@ class FisherFactor(object):
           shape=self._cov_shape,
           trainable=False,
           dtype=self._dtype)
+      self._acc_cov = utils.AccumulatorVariable(
+          name="acc_cov",
+          var=self._cov)
 
   @abc.abstractmethod
   def _compute_new_cov(self, source, tower):
@@ -451,11 +454,14 @@ class FisherFactor(object):
     """
     pass
 
-  def make_covariance_update_op(self, ema_decay):
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
     """Constructs and returns the covariance update Op.
 
     Args:
       ema_decay: The exponential moving average decay (float or Tensor).
+      num_steps_per_cov_update: int, Number of steps to accumulate the cov
+        estimates. Optional (Default: 1)
+
     Returns:
       An Op for updating the covariance Variable referenced by _cov.
     """
@@ -476,8 +482,12 @@ class FisherFactor(object):
     # statistics in other variables should mimic this behavior.
     if utils.on_tpu():
       new_cov = utils.cross_replica_mean(new_cov)
-    return moving_averages.assign_moving_average(
-        self._cov, new_cov, ema_decay, zero_debias=ZERO_DEBIAS)
+
+    return self._acc_cov.accumulate(
+        new_cov,
+        ema_decay=ema_decay,
+        num_steps_for_update=num_steps_per_cov_update,
+        zero_debias=ZERO_DEBIAS)
 
   @abc.abstractmethod
   def _get_data_device(self, tower):
@@ -1116,7 +1126,7 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
   def _dtype(self):
     return self._outputs_grads[0][0].dtype
 
-  def make_covariance_update_op(self, ema_decay):
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
 
     self._squared_inputs = []
     for tower in range(self._num_towers):
@@ -1128,7 +1138,7 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
         self._squared_inputs.append(tf.square(inputs))
 
     return super(FullyConnectedDiagonalFactor, self).make_covariance_update_op(
-        ema_decay)
+        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
 
   def _compute_new_cov(self, source, tower):
     batch_size = tf.shape(self._squared_inputs[tower])[0]
@@ -1238,7 +1248,7 @@ class ConvDiagonalFactor(DiagonalFactor):
   def _dtype(self):
     return self._inputs[0].dtype
 
-  def make_covariance_update_op(self, ema_decay):
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
     filter_height, filter_width, _, _ = self._filter_shape
 
     # TODO(b/64144716): there is potential here for a big savings in terms
@@ -1263,7 +1273,8 @@ class ConvDiagonalFactor(DiagonalFactor):
 
         self._patches.append(patches)
 
-    return super(ConvDiagonalFactor, self).make_covariance_update_op(ema_decay)
+    return super(ConvDiagonalFactor, self).make_covariance_update_op(
+        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
 
   def _compute_new_cov(self, source, tower):
     patches = self._patches[tower]
@@ -1598,6 +1609,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     self._num_uses = num_uses
 
     self._cov_dt1 = None
+    self._acc_cov_dt1 = None
     self._make_cov_dt1 = False
     self._option1quants_by_damping = {}
     self._option2quants_by_damping = {}
@@ -1623,8 +1635,9 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     inv_vars.extend(self._option2quants_by_damping.values())
     return inv_vars
 
-  def make_covariance_update_op(self, ema_decay):
-    op = super(FullyConnectedMultiKF, self).make_covariance_update_op(ema_decay)
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+    op = super(FullyConnectedMultiKF, self).make_covariance_update_op(
+        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
 
     if self._cov_dt1 is not None:
       new_cov_dt1_contribs = []
@@ -1640,8 +1653,11 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       if utils.on_tpu():
         new_cov_dt1 = utils.cross_replica_mean(new_cov_dt1)
 
-      op2 = moving_averages.assign_moving_average(
-          self._cov_dt1, new_cov_dt1, ema_decay, zero_debias=ZERO_DEBIAS)
+      op2 = self._acc_cov_dt1.accumulate(
+          new_cov_dt1,
+          ema_decay=ema_decay,
+          num_steps_for_update=num_steps_per_cov_update,
+          zero_debias=ZERO_DEBIAS)
 
       # TODO(b/69112164):
       # It's important that _cov and _cov_dt1 remain consistent with each
@@ -1712,6 +1728,9 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             shape=self._cov_shape,
             trainable=False,
             dtype=self._dtype)
+        self._acc_cov_dt1 = utils.AccumulatorVariable(
+            name="acc_cov_dt1",
+            var=self._cov_dt1)
 
   def register_option1quants(self, damping_func):
     damping_id = self._register_damping(damping_func)

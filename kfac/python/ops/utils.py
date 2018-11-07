@@ -24,6 +24,8 @@ import tensorflow as tf
 
 from tensorflow.contrib.tpu.python.tpu import tpu_function
 from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.training import moving_averages
+
 
 # Method used for inverting matrices.
 POSDEF_INV_METHOD = "cholesky"
@@ -315,10 +317,8 @@ def fwd_gradients(ys, xs, grad_xs=None, stop_gradients=None,
   dydxs = [
       tf.zeros_like(x) if dydx is None else dydx for x, dydx in zip(xs, dydxs)
   ]
-
   dysdx = tf.gradients(dydxs, us, grad_ys=grad_xs,
                        colocate_gradients_with_ops=colocate_gradients_with_ops)
-
   return dysdx
 
 
@@ -600,6 +600,134 @@ def matmul_diag_sparse(A_diag, B, name=None):  # pylint: disable=invalid-name
     a = tf.gather(A_diag, B.indices)
     a = tf.reshape(a, list(a.shape) + [1] * (B.values.shape.ndims - 1))
     return tf.IndexedSlices(a * B.values, B.indices, dense_shape=B.dense_shape)
+
+
+class AccumulatorVariable(object):
+  """Accumulates values over multiple sess.run calls."""
+
+  def __init__(self,
+               name,
+               var=None,
+               acc_var_shape=None,
+               acc_var_dtype=None):
+    """Constructs a new `AccumulatorVariable`.
+
+    If `var` is specified then accumulated value will be assigned to it after
+    every 'num_steps_for_update' runs.  Otherwise `acc_var_shape` and
+    `acc_var_dtype` must be specificed and the accumulated value can be read
+    by invoking `self.accumulated_value` property.
+
+    Args:
+      name: `string`, Name of the accumulator variable.
+      var: tf.Variable, A value for this variable will be assigned after
+        `num_steps` times `assign()` function is invoked.
+      acc_var_shape: Shape of the variable to be accumulated. Required only if
+        `var` is not passed.
+      acc_var_dtype: Data type of the variable to be accumulated. Required only
+        if `var` is not passed.
+
+    Raises:
+     ValueError: If `var` is not passed and `acc_var_shape` or `acc_var_dtype`
+       is None.
+    """
+
+    if var is None and (acc_var_shape is None or acc_var_dtype is None):
+      raise ValueError("If var is not specified then both acc_var_shape and"
+                       "acc_var_dtype must be passed.")
+
+    with tf.variable_scope("acc_var", reuse=tf.AUTO_REUSE):
+      if var is None:
+        self._var = tf.get_variable(
+            name + "orig_var",
+            initializer=tf.zeros_initializer(),
+            shape=acc_var_shape,
+            dtype=acc_var_dtype,
+            trainable=False)
+      else:
+        self._var = var
+
+      self._acc_var = tf.get_variable(
+          name,
+          initializer=tf.zeros_initializer(),
+          shape=var.shape if var is not None else acc_var_shape,
+          dtype=var.dtype if var is not None else acc_var_dtype,
+          trainable=False)
+
+      self._counter = tf.get_variable(
+          shape=(),
+          dtype=tf.int32,
+          name=name+"acc_counter",
+          initializer=tf.zeros_initializer(),
+          trainable=False)
+
+  def accumulate(self,
+                 value,
+                 ema_decay=0.,
+                 num_steps_for_update=1,
+                 zero_debias=False):
+    """Adds `value` to the accumulator var and assigns to `var` conditionally.
+
+    Adds `value` to accumulator varibale. If the function is called
+    `num_steps_for_update` number of times then the accumulated value is
+    assigned to `var` and accumulated value is reset to
+    zero and new accumulation cycle is started.
+
+    Args:
+      value: A tensor, of the same shape and type as `var`
+      (or `acc_var_shape` and `acc_var_dtype`)passed to the initializer.
+      ema_decay: float, If the vale is zero, then accumulated value is assigned
+        directly used otherwise moving avergae of the accumulated value is
+        computed. Optional (Default: 0.)
+      num_steps_for_update: int, The number of steps to accumulate in each
+        cycle before resetting. Optional, Default: 1.
+      zero_debias: boolean, Whether to zero-debias the moving averages.
+        Optional, Default: False.
+
+    Returns:
+      An op which does accumulation and manages accumulation cycles.
+    """
+    inc_step_op = tf.assign_add(self._counter, 1)
+    acc_op = tf.assign_add(self._acc_var, value)
+
+    with tf.control_dependencies([inc_step_op]):
+      with tf.device(None):
+        should_reset = tf.equal(tf.mod(self._counter, num_steps_for_update), 0)
+
+    with tf.control_dependencies([acc_op, inc_step_op]):
+      var_assign_op = tf.cond(
+          should_reset, self._assign_acc_value_to_var(ema_decay, zero_debias),
+          tf.no_op)
+
+      with tf.control_dependencies([var_assign_op]):
+        return tf.cond(should_reset, self._reset_var, tf.no_op)
+
+  @property
+  def value(self):
+    """Returns the value of accumulator variable which is reset."""
+    return tf.identity(self._acc_var)
+
+  @property
+  def accumulated_value(self):
+    """Returns the accumulated value."""
+    return tf.identity(self._var)
+
+  def _assign_acc_value_to_var(self, ema_decay, zero_debias):
+
+    def _assign():
+      if ema_decay > 0.:
+        return tf.group(moving_averages.assign_moving_average(
+            self._var, self._acc_var, ema_decay, zero_debias=zero_debias))
+      else:
+        return tf.group(tf.assign(self._var, self._acc_var))
+
+    return _assign
+
+  def _reset_var(self):
+    """Resets step counter and accumulator variable."""
+    var_zero_assign_op = tf.assign(
+        self._acc_var, tf.zeros(self._acc_var.shape, dtype=self._acc_var.dtype))
+    with tf.control_dependencies([var_zero_assign_op]):
+      return tf.group(tf.assign(self._counter, tf.constant(0)))
 
 
 class PartitionedTensor(object):
