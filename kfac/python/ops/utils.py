@@ -614,8 +614,8 @@ class AccumulatorVariable(object):
 
     If `var` is specified then accumulated value will be assigned to it after
     every 'num_steps_for_update' runs.  Otherwise `acc_var_shape` and
-    `acc_var_dtype` must be specificed and the accumulated value can be read
-    by invoking `self.accumulated_value` property.
+    `acc_var_dtype` must be specificed and the average accumulated value can be
+    read by invoking `self.accumulated_value` property.
 
     Args:
       name: `string`, Name of the accumulator variable.
@@ -670,10 +670,10 @@ class AccumulatorVariable(object):
                  zero_debias=False):
     """Adds `value` to the accumulator var and assigns to `var` conditionally.
 
-    Adds `value` to accumulator varibale. If the function is called
-    `num_steps_for_update` number of times then the accumulated value is
-    assigned to `var` and accumulated value is reset to
-    zero and new accumulation cycle is started.
+    Adds `value` to accumulator variable. If the function is called
+    `num_steps_for_update` number of times then the accumulated value, divided
+    by `num_steps_for_update`, is assigned to `var` and accumulated value is
+    reset to zero and new accumulation cycle is started.
 
     Args:
       value: A tensor, of the same shape and type as `var`
@@ -698,8 +698,9 @@ class AccumulatorVariable(object):
 
     with tf.control_dependencies([acc_op, inc_step_op]):
       var_assign_op = tf.cond(
-          should_reset, self._assign_acc_value_to_var(ema_decay, zero_debias),
-          tf.no_op)
+          should_reset,
+          self._assign_acc_value_to_var(ema_decay, zero_debias,
+                                        num_steps_for_update), tf.no_op)
 
       with tf.control_dependencies([var_assign_op]):
         return tf.cond(should_reset, self._reset_var, tf.no_op)
@@ -714,14 +715,16 @@ class AccumulatorVariable(object):
     """Returns the accumulated value."""
     return tf.identity(self._var)
 
-  def _assign_acc_value_to_var(self, ema_decay, zero_debias):
-
+  def _assign_acc_value_to_var(self, ema_decay, zero_debias,
+                               num_steps_for_update):
+    """Assigns average accumulate value to self._var."""
     def _assign():
+      avg_acc_val = (1. / num_steps_for_update) * self._acc_var
       if ema_decay > 0.:
         return tf.group(moving_averages.assign_moving_average(
-            self._var, self._acc_var, ema_decay, zero_debias=zero_debias))
+            self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
       else:
-        return tf.group(tf.assign(self._var, self._acc_var))
+        return tf.group(tf.assign(self._var, avg_acc_val))
 
     return _assign
 
