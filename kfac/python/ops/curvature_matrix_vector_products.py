@@ -173,7 +173,7 @@ class CurvatureMatrixVectorProductComputer(object):
 
   def multiply_fisher_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of Fisher of total loss."""
-    fisher_factor_transpose_vecs = self._multiply_loss_fisher_factor_transpose(
+    fisher_factor_transpose_vecs = self._multiply_loss_fisher_factor(
         loss_inner_vecs)
     return self._multiply_jacobian_transpose(fisher_factor_transpose_vecs)
 
@@ -202,7 +202,7 @@ class CurvatureMatrixVectorProductComputer(object):
   def multiply_generalized_gauss_newton_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of GGN of total loss."""
     hessian_factor_transpose_vecs = (
-        self._multiply_loss_hessian_factor_transpose(loss_inner_vecs))
+        self._multiply_loss_hessian_factor(loss_inner_vecs))
     return self._multiply_jacobian_transpose(hessian_factor_transpose_vecs)
 
   # Shape properties for multiply_XXX_factor methods:
