@@ -360,13 +360,13 @@ class LayerCollection(object):
     self.fisher_blocks[layer_key] = fisher_block
     return fisher_block
 
-  def register_loss_function(self,
-                             loss,
-                             colocation_op,
-                             base_name,
-                             name=None,
-                             coeff=1.0,
-                             reuse=VARIABLE_SCOPE):
+  def _register_loss_function(self,
+                              loss,
+                              colocation_op,
+                              base_name,
+                              name=None,
+                              coeff=1.0,
+                              reuse=VARIABLE_SCOPE):
     """Registers a LossFunction object.
 
     Args:
@@ -1218,9 +1218,9 @@ class LayerCollection(object):
     """
     loss = lf.CategoricalLogitsNegativeLogProbLoss(logits, targets=targets,
                                                    seed=seed)
-    self.register_loss_function(loss, logits,
-                                "categorical_predictive_distribution",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, logits,
+                                 "categorical_predictive_distribution",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def register_softmax_cross_entropy_loss(self,
                                           logits,
@@ -1258,9 +1258,9 @@ class LayerCollection(object):
     """
     loss = lf.CategoricalLogitsNegativeLogProbLoss(logits, targets=targets,
                                                    seed=seed)
-    self.register_loss_function(loss, logits,
-                                "softmax_cross_entropy_loss",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, logits,
+                                 "softmax_cross_entropy_loss",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def register_normal_predictive_distribution(self,
                                               mean,
@@ -1302,9 +1302,9 @@ class LayerCollection(object):
     """
     loss = lf.NormalMeanNegativeLogProbLoss(mean, var, targets=targets,
                                             seed=seed)
-    self.register_loss_function(loss, mean,
-                                "normal_predictive_distribution",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, mean,
+                                 "normal_predictive_distribution",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def register_squared_error_loss(self,
                                   prediction,
@@ -1340,9 +1340,9 @@ class LayerCollection(object):
     loss = lf.NormalMeanNegativeLogProbLoss(prediction, var=0.5,
                                             targets=targets,
                                             seed=seed)
-    self.register_loss_function(loss, prediction,
-                                "squared_error_loss",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, prediction,
+                                 "squared_error_loss",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def register_multi_bernoulli_predictive_distribution(self,
                                                        logits,
@@ -1383,9 +1383,9 @@ class LayerCollection(object):
     """
     loss = lf.MultiBernoulliNegativeLogProbLoss(logits, targets=targets,
                                                 seed=seed)
-    self.register_loss_function(loss, logits,
-                                "multi_bernoulli_predictive_distribution",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, logits,
+                                 "multi_bernoulli_predictive_distribution",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def register_sigmoid_cross_entropy_loss(self,
                                           logits,
@@ -1423,9 +1423,9 @@ class LayerCollection(object):
     """
     loss = lf.MultiBernoulliNegativeLogProbLoss(logits, targets=targets,
                                                 seed=seed)
-    self.register_loss_function(loss, logits,
-                                "sigmoid_cross_entropy_loss",
-                                name=name, coeff=coeff, reuse=reuse)
+    self._register_loss_function(loss, logits,
+                                 "sigmoid_cross_entropy_loss",
+                                 name=name, coeff=coeff, reuse=reuse)
 
   def make_or_get_factor(self, cls, args):
     """Insert 'cls(args)' into 'self.fisher_factors' if not already present.
