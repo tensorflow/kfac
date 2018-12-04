@@ -307,7 +307,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                          "variables.")
       if self._adapt_damping and self._is_chief:
         global_step = kwargs.get("global_step", None)
-        if not global_step:
+        if global_step is None:
           raise KeyError("global_step needs to be passed to optimizer.minimize "
                          "if damping parameter is adapted.")
         update_damping_op = self._update_damping(self._prev_train_batch,

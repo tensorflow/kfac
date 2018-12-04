@@ -720,11 +720,16 @@ class AccumulatorVariable(object):
     """Assigns average accumulate value to self._var."""
     def _assign():
       avg_acc_val = (1. / num_steps_for_update) * self._acc_var
-      if ema_decay > 0.:
-        return tf.group(moving_averages.assign_moving_average(
-            self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
-      else:
-        return tf.group(tf.assign(self._var, avg_acc_val))
+      ema_decay_tensor = tf.convert_to_tensor(ema_decay)
+
+      def _assign_moving_average():
+        return tf.group(
+            moving_averages.assign_moving_average(
+                self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
+
+      return tf.cond(tf.greater(ema_decay_tensor, 0.),
+                     _assign_moving_average,
+                     lambda: tf.group(tf.assign(self._var, avg_acc_val)))
 
     return _assign
 
