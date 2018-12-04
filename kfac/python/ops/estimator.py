@@ -519,8 +519,8 @@ class FisherEstimator(object):
       mult_func = lambda loss, index: loss.multiply_fisher_factor(index)
       inner_shape_func = lambda loss: loss.fisher_factor_inner_shape
     elif mode == "GGN":
-      mult_func = lambda loss, index: loss.multiply_hessian_factor(index)
-      inner_shape_func = lambda loss: loss.hessian_factor_inner_shape
+      mult_func = lambda loss, index: loss.multiply_ggn_factor(index)
+      inner_shape_func = lambda loss: loss.ggn_factor_inner_shape
 
     transformed_random_signs = []
     for loss in self.layers.losses:
@@ -551,8 +551,8 @@ class FisherEstimator(object):
     elif mode == "GGN":
       # pylint: disable=g-long-lambda
       mult_func = (lambda loss, index:
-                   loss.multiply_hessian_factor_replicated_one_hot(index))
-      inner_shape_func = lambda loss: loss.fisher_hessian_inner_static_shape
+                   loss.multiply_ggn_factor_replicated_one_hot(index))
+      inner_shape_func = lambda loss: loss.fisher_ggn_inner_static_shape
 
     # Loop over all coordinates of all losses.
     grads_all = []

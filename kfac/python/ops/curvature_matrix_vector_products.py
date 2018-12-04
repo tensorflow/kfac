@@ -26,7 +26,7 @@ from kfac.python.ops import utils
 
 
 class CurvatureMatrixVectorProductComputer(object):
-  """Class for computing matrix-vector products for Fishers, GGNs and Hessians.
+  """Class for computing matrix-vector products for Fishers and GGNs.
 
   In other words we compute M*v where M is the matrix, v is the vector, and
   * refers to standard matrix/vector multiplication (not element-wise
@@ -120,7 +120,7 @@ class CurvatureMatrixVectorProductComputer(object):
         stop_gradients=self._wrt_tensors,
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
-  # Losses Fisher/Hessian multiplication functions:
+  # Losses Fisher/GGN multiplication functions:
   def _multiply_loss_fisher(self, loss_vecs):
     """Multiply loss_vecs by Fisher of total loss."""
     return tuple(
@@ -144,19 +144,19 @@ class CurvatureMatrixVectorProductComputer(object):
     mult_func = lambda loss, vec: loss.multiply_fisher_factor_transpose(vec)
     return self._multiply_across_losses(mult_func, loss_vecs)
 
-  def _multiply_loss_hessian(self, loss_vecs):
-    """Multiply loss_vecs by Hessian of total loss."""
-    mult_func = lambda loss, vec: loss.multiply_hessian(vec)
+  def _multiply_loss_ggn(self, loss_vecs):
+    """Multiply loss_vecs by GGN of total loss."""
+    mult_func = lambda loss, vec: loss.multiply_ggn(vec)
     return self._multiply_across_losses(mult_func, loss_vecs)
 
-  def _multiply_loss_hessian_factor(self, loss_inner_vecs):
-    """Multiply loss_inner_vecs by factor of Hessian of total loss."""
-    mult_func = lambda loss, vec: loss.multiply_hessian_factor(vec)
+  def _multiply_loss_ggn_factor(self, loss_inner_vecs):
+    """Multiply loss_inner_vecs by factor of GGN of total loss."""
+    mult_func = lambda loss, vec: loss.multiply_ggn_factor(vec)
     return self._multiply_across_losses(mult_func, loss_inner_vecs)
 
-  def _multiply_loss_hessian_factor_transpose(self, loss_vecs):
-    """Multiply loss_vecs by transpose factor of Hessian of total loss."""
-    mult_func = lambda loss, vec: loss.multiply_hessian_factor_transpose(vec)
+  def _multiply_loss_ggn_factor_transpose(self, loss_vecs):
+    """Multiply loss_vecs by transpose factor of GGN of total loss."""
+    mult_func = lambda loss, vec: loss.multiply_ggn_factor_transpose(vec)
     return self._multiply_across_losses(mult_func, loss_vecs)
 
   # Matrix-vector product functions:
@@ -177,8 +177,8 @@ class CurvatureMatrixVectorProductComputer(object):
         loss_inner_vecs)
     return self._multiply_jacobian_transpose(fisher_factor_transpose_vecs)
 
-  def multiply_hessian(self, vecs):
-    """Multiply vecs by Hessian of total loss."""
+  def multiply_ggn(self, vecs):
+    """Multiply vecs by GGN of total loss."""
     return tf.gradients(
         tf.gradients(
             self._total_loss,
@@ -191,19 +191,19 @@ class CurvatureMatrixVectorProductComputer(object):
   def multiply_generalized_gauss_newton(self, vecs):
     """Multiply vecs by generalized Gauss-Newton of total loss."""
     jacobian_vecs = self._multiply_jacobian(vecs)
-    loss_hessian_jacobian_vecs = self._multiply_loss_hessian(jacobian_vecs)
-    return self._multiply_jacobian_transpose(loss_hessian_jacobian_vecs)
+    loss_ggn_jacobian_vecs = self._multiply_loss_ggn(jacobian_vecs)
+    return self._multiply_jacobian_transpose(loss_ggn_jacobian_vecs)
 
   def multiply_generalized_gauss_newton_factor_transpose(self, vecs):
     """Multiply vecs by transpose of factor of GGN of total loss."""
     jacobian_vecs = self._multiply_jacobian(vecs)
-    return self._multiply_loss_hessian_factor_transpose(jacobian_vecs)
+    return self._multiply_loss_ggn_factor_transpose(jacobian_vecs)
 
   def multiply_generalized_gauss_newton_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of GGN of total loss."""
-    hessian_factor_transpose_vecs = (
-        self._multiply_loss_hessian_factor(loss_inner_vecs))
-    return self._multiply_jacobian_transpose(hessian_factor_transpose_vecs)
+    ggn_factor_transpose_vecs = (
+        self._multiply_loss_ggn_factor(loss_inner_vecs))
+    return self._multiply_jacobian_transpose(ggn_factor_transpose_vecs)
 
   # Shape properties for multiply_XXX_factor methods:
   @property
@@ -219,10 +219,10 @@ class CurvatureMatrixVectorProductComputer(object):
   @property
   def generalized_gauss_newton_factor_inner_shapes(self):
     """Shapes required by multiply_generalized_gauss_newton_factor."""
-    return tuple(loss.hessian_factor_inner_shape for loss in self._losses)
+    return tuple(loss.ggn_factor_inner_shape for loss in self._losses)
 
   @property
   def generalized_gauss_newton_factor_inner_static_shapes(self):
     """Shapes required by multiply_generalized_gauss_newton_factor."""
-    return tuple(loss.hessian_factor_inner_static_shape
+    return tuple(loss.ggn_factor_inner_static_shape
                  for loss in self._losses)

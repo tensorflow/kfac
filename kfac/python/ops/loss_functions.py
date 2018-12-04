@@ -74,10 +74,10 @@ class LossFunction(object):
     pass
 
   @abc.abstractmethod
-  def multiply_hessian(self, vector):
-    """Right-multiply a vector by the Hessian.
+  def multiply_ggn(self, vector):
+    """Right-multiply a vector by the GGN.
 
-    Here the 'Hessian' is the Hessian matrix (i.e. matrix of 2nd-derivatives)
+    Here the 'GGN' is the GGN matrix (whose definition is slightly flexible)
     of the loss function with respect to its inputs.
 
     Args:
@@ -85,26 +85,26 @@ class LossFunction(object):
         'inputs' property.
 
     Returns:
-      The vector right-multiplied by the Hessian.  Will be of the same shape(s)
+      The vector right-multiplied by the GGN.  Will be of the same shape(s)
       as the 'inputs' property.
     """
     pass
 
   @abc.abstractmethod
-  def multiply_hessian_factor(self, vector):
-    """Right-multiply a vector by a factor B of the Hessian.
+  def multiply_ggn_factor(self, vector):
+    """Right-multiply a vector by a factor B of the GGN.
 
-    Here the 'Hessian' is the Hessian matrix (i.e. matrix of 2nd-derivatives)
+    Here the 'GGN' is the GGN matrix (whose definition is slightly flexible)
     of the loss function with respect to its inputs.  Typically this will be
     block-diagonal across different cases in the batch, since the loss function
     is typically summed across cases.
 
-    Note that B can be any matrix satisfying B * B^T = H where H is the Hessian,
+    Note that B can be any matrix satisfying B * B^T = G where G is the GGN,
     but will agree with the one used in the other methods of this class.
 
     Args:
       vector: The vector to multiply.  Must be of the shape given by the
-        'hessian_factor_inner_shape' property.
+        'ggn_factor_inner_shape' property.
 
     Returns:
       The vector right-multiplied by B.  Will be of the same shape(s) as the
@@ -113,15 +113,15 @@ class LossFunction(object):
     pass
 
   @abc.abstractmethod
-  def multiply_hessian_factor_transpose(self, vector):
-    """Right-multiply a vector by the transpose of a factor B of the Hessian.
+  def multiply_ggn_factor_transpose(self, vector):
+    """Right-multiply a vector by the transpose of a factor B of the GGN.
 
-    Here the 'Hessian' is the Hessian matrix (i.e. matrix of 2nd-derivatives)
+    Here the 'GGN' is the GGN matrix (whose definition is slightly flexible)
     of the loss function with respect to its inputs.  Typically this will be
     block-diagonal across different cases in the batch, since the loss function
     is typically summed across cases.
 
-    Note that B can be any matrix satisfying B * B^T = H where H is the Hessian,
+    Note that B can be any matrix satisfying B * B^T = G where G is the GGN,
     but will agree with the one used in the other methods of this class.
 
     Args:
@@ -130,15 +130,15 @@ class LossFunction(object):
 
     Returns:
       The vector right-multiplied by B^T.  Will be of the shape given by the
-      'hessian_factor_inner_shape' property.
+      'ggn_factor_inner_shape' property.
     """
     pass
 
   @abc.abstractmethod
-  def multiply_hessian_factor_replicated_one_hot(self, index):
-    """Right-multiply a replicated-one-hot vector by a factor B of the Hessian.
+  def multiply_ggn_factor_replicated_one_hot(self, index):
+    """Right-multiply a replicated-one-hot vector by a factor B of the GGN.
 
-    Here the 'Hessian' is the Hessian matrix (i.e. matrix of 2nd-derivatives)
+    Here the 'GGN' is the GGN matrix (whose definition is slightly flexible)
     of the loss function with respect to its inputs.  Typically this will be
     block-diagonal across different cases in the batch, since the loss function
     is typically summed across cases.
@@ -147,13 +147,13 @@ class LossFunction(object):
     batch dimension (assumed to be dimension 0), is 1.0 in the entry
     corresponding to the given index and 0 elsewhere.
 
-    Note that B can be any matrix satisfying B * B^T = H where H is the Hessian,
+    Note that B can be any matrix satisfying B * B^T = G where G is the GGN,
     but will agree with the one used in the other methods of this class.
 
     Args:
       index: A tuple representing in the index of the entry in each slice that
         is 1.0. Note that len(index) must be equal to the number of elements
-        of the 'hessian_factor_inner_shape' tensor minus one.
+        of the 'ggn_factor_inner_shape' tensor minus one.
 
     Returns:
       The vector right-multiplied by B^T. Will be of the same shape(s) as the
@@ -162,13 +162,13 @@ class LossFunction(object):
     pass
 
   @abc.abstractproperty
-  def hessian_factor_inner_shape(self):
-    """The shape of the tensor returned by multiply_hessian_factor."""
+  def ggn_factor_inner_shape(self):
+    """The shape of the tensor returned by multiply_ggn_factor."""
     pass
 
   @abc.abstractproperty
-  def hessian_factor_inner_static_shape(self):
-    """Static version of hessian_factor_inner_shape."""
+  def ggn_factor_inner_static_shape(self):
+    """Static version of ggn_factor_inner_shape."""
     pass
 
 
@@ -314,32 +314,32 @@ class NegativeLogProbLoss(LossFunction):
 class NaturalParamsNegativeLogProbLoss(NegativeLogProbLoss):
   """Base class for neg log prob losses whose inputs are 'natural' parameters.
 
-  Note that the Hessian and Fisher for natural parameters of exponential-
-  family models are the same, hence the purpose of this class.
-  See here: https://arxiv.org/abs/1412.1193
+  We will take the GGN of the loss to be the Fisher associated with the
+  distribution, which also happens to be equal to the Hessian for this class
+  of loss functions.  See here: https://arxiv.org/abs/1412.1193
 
   'Natural parameters' are defined for exponential-family models. See for
   example: https://en.wikipedia.org/wiki/Exponential_family
   """
 
-  def multiply_hessian(self, vector):
+  def multiply_ggn(self, vector):
     return self.multiply_fisher(vector)
 
-  def multiply_hessian_factor(self, vector):
+  def multiply_ggn_factor(self, vector):
     return self.multiply_fisher_factor(vector)
 
-  def multiply_hessian_factor_transpose(self, vector):
+  def multiply_ggn_factor_transpose(self, vector):
     return self.multiply_fisher_factor_transpose(vector)
 
-  def multiply_hessian_factor_replicated_one_hot(self, index):
+  def multiply_ggn_factor_replicated_one_hot(self, index):
     return self.multiply_fisher_factor_replicated_one_hot(index)
 
   @property
-  def hessian_factor_inner_shape(self):
+  def ggn_factor_inner_shape(self):
     return self.fisher_factor_inner_shape
 
   @property
-  def hessian_factor_inner_static_shape(self):
+  def ggn_factor_inner_static_shape(self):
     return self.fisher_factor_inner_shape
 
 
@@ -526,24 +526,24 @@ class NormalMeanVarianceNegativeLogProbLoss(DistributionNegativeLogProbLoss):
     shape = self._mean.shape.as_list()
     return tf.TensorShape(shape[-1:] + [2 * shape[-1]])
 
-  def multiply_hessian(self, vector):
+  def multiply_ggn(self, vector):
     raise NotImplementedError()
 
-  def multiply_hessian_factor(self, vector):
+  def multiply_ggn_factor(self, vector):
     raise NotImplementedError()
 
-  def multiply_hessian_factor_transpose(self, vector):
+  def multiply_ggn_factor_transpose(self, vector):
     raise NotImplementedError()
 
-  def multiply_hessian_factor_replicated_one_hot(self, index):
-    raise NotImplementedError()
-
-  @property
-  def hessian_factor_inner_shape(self):
+  def multiply_ggn_factor_replicated_one_hot(self, index):
     raise NotImplementedError()
 
   @property
-  def hessian_factor_inner_static_shape(self):
+  def ggn_factor_inner_shape(self):
+    raise NotImplementedError()
+
+  @property
+  def ggn_factor_inner_static_shape(self):
     raise NotImplementedError()
 
 
