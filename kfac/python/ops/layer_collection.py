@@ -48,6 +48,8 @@ APPROX_FULL_NAME = "full"
 APPROX_KRONECKER_INDEP_NAME = "kron_indep"
 APPROX_KRONECKER_SERIES_1_NAME = "kron_series_1"
 APPROX_KRONECKER_SERIES_2_NAME = "kron_series_2"
+APPROX_KRONECKER_SUA_NAME = "kron_sua"
+
 
 # Possible value for 'reuse' keyword argument. Sets 'reuse' to
 # tf.get_variable_scope().reuse.
@@ -172,6 +174,7 @@ class LayerCollection(object):
     self._conv2d_approx_to_block_types = {
         APPROX_KRONECKER_NAME: fb.ConvKFCBasicFB,
         APPROX_DIAGONAL_NAME: fb.ConvDiagonalFB,
+        APPROX_KRONECKER_SUA_NAME: fb.ConvKFCBasicFB,
     }
 
     self._embedding_approx_to_block_types = {
@@ -740,7 +743,8 @@ class LayerCollection(object):
               dilation_rate=dilations,
               extract_patches_fn="extract_image_patches",
               sub_sample_inputs=sub_sample_inputs,
-              sub_sample_patches=sub_sample_patches),
+              sub_sample_patches=sub_sample_patches,
+              use_sua_approx_for_input_factor=False),
           reuse=reuse)
     elif approx == APPROX_DIAGONAL_NAME:
       assert strides[0] == strides[-1] == 1
@@ -754,6 +758,16 @@ class LayerCollection(object):
               dilations=dilations,
               data_format=data_format),
           reuse=reuse)
+    elif approx == APPROX_KRONECKER_SUA_NAME:
+      block = self.register_block(
+          params,
+          block_type(
+              layer_collection=self,
+              params=params,
+              padding=padding,
+              use_sua_approx_for_input_factor=True),
+          reuse=reuse)
+
     else:
       raise NotImplementedError(approx)
 

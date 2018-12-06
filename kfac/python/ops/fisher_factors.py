@@ -51,6 +51,19 @@ EIGENVALUE_DECOMPOSITION_THRESHOLD = 2
 # matrix powers. Must be nonnegative.
 EIGENVALUE_CLIPPING_THRESHOLD = 0.0
 
+# When approximating conv layer input factor using spatially uncorrelated
+# activations (`ConvInputSUAKroneckerfactor`) if this is True then assumes the
+# activations to have zero mean.
+ASSUME_ZERO_MEAN_ACTIVATIONS = False
+
+# When approximating conv layer input factor using spatially uncorrelated
+# activations (`ConvInputSUAKroneckerfactor`) if this is True then do
+# mean subtraction from covariance matrix. Note this flag is only checked in the
+# case where ASSUME_ZERO_MEAN_ACTIVATIONS is set to True. If
+# ASSUME_ZERO_MEAN_ACTIVATIONS is False then mean is always subtracted from the
+# covaraince matrix and this flag is redundant.
+
+SUBTRACT_MEAN_CONTRIB_FROM_COV = True
 
 # Subsample the inputs passed to the extract image patches. The number of
 # inputs is normally batch_size. If _SUB_SAMPLE_INPUTS = True then
@@ -104,6 +117,8 @@ def set_global_constants(init_covariances_at_zero=None,
                          init_inverses_at_zero=None,
                          eigenvalue_decomposition_threshold=None,
                          eigenvalue_clipping_threshold=None,
+                         assume_zero_mean_activations=None,
+                         subtract_mean_contrib_from_cov=None,
                          sub_sample_inputs=None,
                          inputs_to_extract_patches_factor=None,
                          sub_sample_patches=None,
@@ -117,6 +132,9 @@ def set_global_constants(init_covariances_at_zero=None,
   global INIT_INVERSES_AT_ZERO
   global EIGENVALUE_DECOMPOSITION_THRESHOLD
   global EIGENVALUE_CLIPPING_THRESHOLD
+  global ASSUME_ZERO_MEAN_ACTIVATIONS
+  global SUBTRACT_MEAN_CONTRIB_FROM_COV
+
   global _SUB_SAMPLE_INPUTS
   global _INPUTS_TO_EXTRACT_PATCHES_FACTOR
   global _SUB_SAMPLE_PATCHES
@@ -135,6 +153,10 @@ def set_global_constants(init_covariances_at_zero=None,
     EIGENVALUE_DECOMPOSITION_THRESHOLD = eigenvalue_decomposition_threshold
   if eigenvalue_clipping_threshold is not None:
     EIGENVALUE_CLIPPING_THRESHOLD = eigenvalue_clipping_threshold
+  if assume_zero_mean_activations is not None:
+    ASSUME_ZERO_MEAN_ACTIVATIONS = assume_zero_mean_activations
+  if subtract_mean_contrib_from_cov is not None:
+    SUBTRACT_MEAN_CONTRIB_FROM_COV = subtract_mean_contrib_from_cov
   if sub_sample_inputs is not None:
     _SUB_SAMPLE_INPUTS = sub_sample_inputs
   if inputs_to_extract_patches_factor is not None:
@@ -206,11 +228,13 @@ def compute_cov(tensor, tensor_right=None, normalizer=None):
             tf.cast(normalizer, tensor.dtype))
 
 
-def append_homog(tensor):
+def append_homog(tensor, homog_value=1.):
   """Appends a homogeneous coordinate to the last dimension of a Tensor.
 
   Args:
     tensor: A Tensor.
+    homog_value: Value to append as homogeneous coordinate to the last dimension
+      of `tensor`. (Default: 1.)
 
   Returns:
     A Tensor identical to the input but one larger in the last dimension.  The
@@ -218,7 +242,7 @@ def append_homog(tensor):
   """
   rank = len(tensor.shape.as_list())
   shape = tf.concat([tf.shape(tensor)[:-1], [1]], axis=0)
-  ones = tf.ones(shape, dtype=tensor.dtype)
+  ones = homog_value * tf.ones(shape, dtype=tensor.dtype)
   return tf.concat([tensor, ones], axis=rank - 1)
 
 
@@ -454,17 +478,8 @@ class FisherFactor(object):
     """
     pass
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
-    """Constructs and returns the covariance update Op.
-
-    Args:
-      ema_decay: The exponential moving average decay (float or Tensor).
-      num_steps_per_cov_update: int, Number of steps to accumulate the cov
-        estimates. Optional (Default: 1)
-
-    Returns:
-      An Op for updating the covariance Variable referenced by _cov.
-    """
+  def _compute_total_new_cov(self):
+    """Computes covariance by summing across (source, towers)."""
     new_cov_contribs = []
     for source in range(self._num_sources):
       for tower in range(self._num_towers):
@@ -483,6 +498,22 @@ class FisherFactor(object):
     if utils.on_tpu():
       new_cov = utils.cross_replica_mean(new_cov)
 
+    return new_cov
+
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+    """Constructs and returns the covariance update Op.
+
+    Args:
+      ema_decay: The exponential moving average decay (float or Tensor).
+      num_steps_per_cov_update: int, Number of steps to accumulate the cov
+        estimates. Optional (Default: 1)
+
+    Returns:
+      If `accumulate_cov` is `True` then returns an Op for updating the
+      covariance variable referenced by _cov. Otherwise returns the newly
+      computed cov.
+    """
+    new_cov = self._compute_total_new_cov()
     return self._acc_cov.accumulate(
         new_cov,
         ema_decay=ema_decay,
@@ -1513,6 +1544,422 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     # ConvOutputKroneckerFactor.
     # (Tilde omitted over A for clarity.)
     return compute_cov(patches_flat)
+
+  def _get_data_device(self, tower):
+    return self._inputs[tower].device
+
+
+class ConvInputSUAKroneckerFactor(FisherFactor):
+  r"""Kronecker factor for the input side of a convolutional layer.
+
+  Assumes activations across locations are uncorrelated. Check section 4.2
+  Theorem 4 in https://arxiv.org/pdf/1602.01407.pdf for further details on the
+  assumptions. This is a computationally more efficient approximation,
+  especially for very wide layers.
+  """
+
+  def __init__(self, inputs, filter_shape, has_bias=False):
+    """Initializes ConvInputSUAKroneckerFactor.
+
+    If `ASSUME_ZERO_MEAN_ACTIVATIONS` is `True` then assumes activations
+    zero mean and the contribution from `M(j) M(j')` term in
+    Theorem 4 from https://arxiv.org/pdf/1602.01407.pdf is ignored.
+
+    Args:
+      inputs: List of Tensors of shape [batch_size, ..spatial_input_size..,
+        in_channels]. Inputs to layer. List index is tower.
+      filter_shape: List of ints. Contains [..spatial_filter_size..,
+        in_channels, out_channels]. Shape of convolution kernel.
+      has_bias: bool. If True, appends 1 to mean activations.
+    """
+    self._inputs = inputs
+    self._filter_shape = filter_shape
+    self._has_bias = has_bias
+
+    self._kw_kh = np.prod(self._filter_shape[0:-2])
+    self._in_channels = self._filter_shape[-2]
+
+    self._matpower_by_exp_and_damping = {}  # { (float, hashable): variable }
+    self._matpower_registrations = set()  # { (float, hashable) }
+    self._damping_funcs_by_id = {}  # {hashable: lambda}
+    self._damping_var_by_id = {}
+
+    if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+      self._cov_inv_mu_by_damping_id = {}
+      self._rank_one_update_scale_by_damping_id = {}
+
+    super(ConvInputSUAKroneckerFactor, self).__init__()
+
+  @property
+  def _var_scope(self):
+    return "ff_convinsuakron_" + scope_string_from_params(
+        tuple(self._inputs) + tuple((self._filter_shape, self._has_bias)))
+
+  @property
+  def _cov_shape(self):
+    """Returns a list with value [in_channels, in_channels].
+
+    NOTE: This does not return the shape of the full cov matrix. But returns the
+    shape of the matrix which computes the covariance of the input channel
+    activations under the assumption mentioned in Theorem 4 in
+    https://arxiv.org/pdf/1602.01407.pdf. This does not include bias dimension
+    and also includes only the `Sigma` term from Theorem 4 in
+    the paper.
+    """
+    return [self._in_channels, self._in_channels]
+
+  @property
+  def _num_sources(self):
+    return 1
+
+  @property
+  def _num_towers(self):
+    return len(self._inputs)
+
+  @property
+  def _dtype(self):
+    return self._inputs[0].dtype
+
+  def _register_damping(self, damping_func):
+    damping_id = graph_func_to_id(damping_func)
+    if damping_id not in self._damping_funcs_by_id:
+      self._damping_funcs_by_id[damping_id] = damping_func
+    return damping_id
+
+  def get_inv_vars(self):
+    inv_vars = []
+    inv_vars.extend(self._matpower_by_exp_and_damping.values())
+    return inv_vars
+
+  def instantiate_cov_variables(self):
+    """Makes the internal cov variable(s)."""
+    super(ConvInputSUAKroneckerFactor, self).instantiate_cov_variables()
+
+    # Create variables for computing the mean activations only if
+    # `ASSUME_ZERO_MEAN_ACTIVATIONS` is set to `False`. Otherwise the
+    # contribution from the second term in equation 35 in the paper
+    # https://arxiv.org/pdf/1602.01407.pdf is ignored.
+    if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
+        self._mu = tf.get_variable(
+            "mu",
+            initializer=tf.zeros_initializer,
+            shape=(self._in_channels, 1),  # number of input channels.
+            trainable=False,
+            dtype=self._dtype)
+        self._acc_mu = utils.AccumulatorVariable(name="acc_mu", var=self._mu)
+
+  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+    """Constructs and returns the covariance update Op.
+
+    Args:
+      ema_decay: The exponential moving average decay (float or Tensor).
+      num_steps_per_cov_update: int, Number of steps to accumulate the cov
+        estimates. Optional (Default: 1)
+
+    Returns:
+      An Op for updating the covariance Variable referenced by _cov and possibly
+      updating mean activations.
+    """
+
+    # The newly computed cov matrix is returned and assigned below to the
+    # moving average. `new_cov` is required to compute mean activations.
+    # Mean activations is given by last row and col of `new_cov.
+    # Remove the last row and col from `new_cov`.
+
+    new_cov = super(ConvInputSUAKroneckerFactor, self)._compute_total_new_cov()
+    new_mu = new_cov[:-1, -1:]
+    new_cov = new_cov[0:-1, 0:-1]
+
+    if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+      new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
+      acc_mu_op = self._acc_mu.accumulate(
+          new_mu,
+          ema_decay=ema_decay,
+          num_steps_for_update=num_steps_per_cov_update,
+          zero_debias=ZERO_DEBIAS)
+    else:
+      if SUBTRACT_MEAN_CONTRIB_FROM_COV:
+        new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
+
+      acc_mu_op = tf.no_op()
+
+    acc_cov_op = self._acc_cov.accumulate(
+        new_cov,
+        ema_decay=ema_decay,
+        num_steps_for_update=num_steps_per_cov_update,
+        zero_debias=ZERO_DEBIAS)
+
+    return tf.group(acc_cov_op, acc_mu_op)
+
+  def _compute_new_cov(self, source, tower):
+    assert source == 0
+    inputs = self._inputs[tower]
+    # Reshape inputs to compute [in_channels, in_channels] shape cov.
+    channel_inputs = tf.reshape(inputs, shape=(-1, self._in_channels))
+
+    # Append the bias dimension as we need this to calculate mean activations.
+    channel_inputs = append_homog(channel_inputs)
+
+    return compute_cov(channel_inputs)
+
+  def register_matpower(self, exp, damping_func):
+    """Registers a matrix power to be maintained and served on demand.
+
+    This creates a variable and signals make_inverse_update_ops to make the
+    corresponding update op.  The variable can be read via the method
+    get_matpower.
+
+    Args:
+      exp: float.  The exponent to use in the matrix power.
+      damping_func: A function that computes a 0-D Tensor or a float which will
+        be the damping value used.  i.e. damping = damping_func().
+    """
+    if exp == 1.0:
+      return
+
+    if exp != -1:
+      raise ValueError("ConvInputSUAKroneckerFactor supports only"
+                       "matrix inversion")
+
+    damping_id = self._register_damping(damping_func)
+
+    if (exp, damping_id) not in self._matpower_registrations:
+      self._matpower_registrations.add((exp, damping_id))
+
+  def _compute_sm_rank_one_update_quants(self, exp, damping_id, damping_value):
+    """Returns tensors to compute Fisher inv using Sherman-Morrison formula."""
+
+    cov_inv = self._matpower_by_exp_and_damping[(exp, damping_id)]
+    cov_inv_mu = tf.matmul(cov_inv, self._mu)
+    hatmu_t_cov_inv_hatmu = self._kw_kh * tf.squeeze(
+        tf.matmul(self._mu, cov_inv_mu, transpose_a=True))
+
+    if self._has_bias:
+      tildemu_t_cov_inv_tildemu = hatmu_t_cov_inv_hatmu + (1. / damping_value)
+      return cov_inv_mu, (1. / (1. + tildemu_t_cov_inv_tildemu))
+    else:
+      return cov_inv_mu, (1. / (1. + hatmu_t_cov_inv_hatmu))
+
+  def get_matpower(self, exp, damping_func):
+    if exp == 1:
+      return self._make_cov_linear_operator(
+          damping=tf.cast(damping_func(), dtype=self._dtype))
+    elif exp == -1:
+      damping_id = graph_func_to_id(damping_func)
+      cov_inv = self._matpower_by_exp_and_damping[(exp, damping_id)]
+      damping_value = self._damping_var_by_id[damping_id]
+
+      # Replicates the in_channels * in_channels cov inverse matrix.
+      # Note that in this function the replications are not done explicitly.
+      # They are done using tf.linalg ops and hence they are computationally
+      # efficient.
+      quant_1 = tf.linalg.LinearOperatorKronecker([
+          tf.linalg.LinearOperatorFullMatrix(
+              cov_inv,
+              is_non_singular=True,
+              is_self_adjoint=True,
+              is_positive_definite=True,
+              is_square=True),
+          tf.linalg.LinearOperatorIdentity(
+              num_rows=self._kw_kh, dtype=self._dtype)
+      ])
+      # If a bias dimension needs to be appended then we need to expand
+      # scaled_cov_inv_mu and assign `1` to the last dimension. Also
+      # we need to append inverse of damping constant (1 * 1 matrix) to
+      # to the replicated cov inverse matrix.
+      if self._has_bias:
+        bias_operator = tf.linalg.LinearOperatorFullMatrix(
+            [[1. / damping_value]],
+            is_non_singular=True,
+            is_self_adjoint=True,
+            is_positive_definite=True,
+            is_square=True)
+        cov_inv_kron_identity_operator = tf.linalg.LinearOperatorBlockDiag(
+            [quant_1, bias_operator])
+
+        if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+          cov_inv_mu = self._cov_inv_mu_by_damping_id[damping_id]
+          scale = self._rank_one_update_scale_by_damping_id[damping_id]
+
+          # Compute cov_inv_mu kron 1's vec. We tile the cov_inv_mu on the last
+          # dim and then reshape.
+          mean_update = (
+              tf.expand_dims(
+                  append_homog(
+                      tf.reshape(tf.tile(cov_inv_mu, [1, self._kw_kh]), (-1,)),
+                      homog_value=(1. / damping_value)),
+                  axis=1))
+      else:
+        cov_inv_kron_identity_operator = quant_1
+
+        if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+          cov_inv_mu = self._cov_inv_mu_by_damping_id[damping_id]
+          scale = self._rank_one_update_scale_by_damping_id[damping_id]
+          # Compute cov_inv_mu kron 1's vec. We tile the cov_inv_mu on the last
+          # dim and then reshape.
+          mean_update = tf.reshape(
+              tf.tile(cov_inv_mu, [1, self._kw_kh]), (-1, 1))
+
+      if ASSUME_ZERO_MEAN_ACTIVATIONS:
+        return cov_inv_kron_identity_operator
+      else:
+        # To include the contribution from the mean activations we need to
+        # low rank update op. Note the Sherman Morrison formula requires
+        # negative of (mean_update * mean_update^T) / scale term to be added.
+        # In order to achieve this using `LinearOperatorLowRankUpdate` set `v`
+        # to negative of mean update vector multiplied by scale.
+        return tf.linalg.LinearOperatorLowRankUpdate(
+            cov_inv_kron_identity_operator,
+            mean_update,
+            v=-scale * mean_update,
+            is_non_singular=True,
+            is_self_adjoint=True,
+            is_positive_definite=True,
+            is_square=True)
+    else:
+      raise ValueError("ConvInputSUAKroneckerFactor only supports"
+                       "computing inverse of cov matrix.")
+
+  def make_inverse_update_ops(self):
+    """Creates and return update ops for registered computations."""
+    inverse_ops = []
+    for (exp,
+         damping_id), matpower in self._matpower_by_exp_and_damping.items():
+      assert exp == -1
+
+      damping = tf.cast(self._damping_funcs_by_id[damping_id](), self._dtype)
+      damping_assign_op = self._damping_var_by_id[damping_id].assign(damping)
+      inverse_op = matpower.assign(utils.posdef_inv(self.cov, damping))
+      inverse_ops.append(damping_assign_op)
+
+      if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+        with tf.control_dependencies([inverse_op]):
+          (cov_inv_mu,
+           rank_one_update_scale) = self._compute_sm_rank_one_update_quants(
+               exp, damping_id, damping)
+
+          inverse_ops.append(
+              self._cov_inv_mu_by_damping_id[damping_id].assign(cov_inv_mu))
+          inverse_ops.append(
+              self._rank_one_update_scale_by_damping_id[damping_id].assign(
+                  rank_one_update_scale))
+      else:
+        inverse_ops.append(inverse_op)
+
+    return inverse_ops
+
+  def get_inverse(self, damping_func):
+    # Just for backwards compatibility of some old code and tests
+    return self.get_matpower(-1, damping_func)
+
+  def instantiate_inv_variables(self):
+    """Makes the internal "inverse" variable(s)."""
+
+    for (exp, damping_id) in self._matpower_registrations:
+      if exp != -1.:
+        raise ValueError("ConvInputSUAKroneckerFactor only supports inverse"
+                         "computation")
+
+      exp_string = scalar_or_tensor_to_string(exp)
+      damping_func = self._damping_funcs_by_id[damping_id]
+      damping_string = graph_func_to_string(damping_func)
+      with tf.variable_scope(self._var_scope, use_resource=utils.on_tpu()):
+        matpower = tf.get_variable(
+            "matpower_exp{}_damp{}".format(exp_string, damping_string),
+            initializer=inverse_initializer,
+            shape=self._cov_shape,
+            trainable=False,
+            dtype=self._dtype)
+
+      assert (exp, damping_id) not in self._matpower_by_exp_and_damping
+      self._matpower_by_exp_and_damping[(exp, damping_id)] = matpower
+
+      self._damping_var_by_id[damping_id] = tf.get_variable(
+          "damping_var_{}_{}".format(exp_string, damping_string),
+          initializer=tf.zeros_initializer,
+          shape=(),
+          trainable=False,
+          dtype=self._dtype)
+
+      if not ASSUME_ZERO_MEAN_ACTIVATIONS:
+        self._cov_inv_mu_by_damping_id[damping_id] = tf.get_variable(
+            "cov_inv_mu_{}_{}".format(exp_string, damping_string),
+            initializer=tf.zeros_initializer,
+            shape=self._mu.shape,
+            trainable=False,
+            dtype=self._dtype)
+
+        self._rank_one_update_scale_by_damping_id[damping_id] = tf.get_variable(
+            "rank_one_update_scale_{}_{}".format(exp_string, damping_string),
+            initializer=tf.zeros_initializer,
+            shape=(),
+            trainable=False,
+            dtype=self._dtype)
+
+  def _make_cov_linear_operator(self, damping=None):
+    """Returns cov as a linear operator.
+
+    Args:
+      damping: Damping value tensor. If `damping` is not None then returns
+        damped covariance matrix.
+
+    Returns:
+      tf.linalg.LinearOperator instance.
+    """
+    if damping is not None:
+      cov = self.cov + damping * tf.eye(self._cov_shape[0], dtype=self._dtype)
+    else:
+      cov = self.cov
+
+    cov_operator = tf.linalg.LinearOperatorKronecker([
+        tf.linalg.LinearOperatorFullMatrix(
+            cov, is_self_adjoint=True, is_square=True),
+        tf.linalg.LinearOperatorIdentity(
+            num_rows=self._kw_kh, dtype=self._dtype)
+    ])
+
+    if self._has_bias:
+      bias_value = damping if damping is not None else 0.
+      bias_operator = tf.linalg.LinearOperatorFullMatrix([[bias_value]],
+                                                         is_self_adjoint=True,
+                                                         is_square=True)
+      cov_operator = tf.linalg.LinearOperatorBlockDiag(
+          [cov_operator, bias_operator])
+
+    if ASSUME_ZERO_MEAN_ACTIVATIONS:
+      return cov_operator
+    else:
+      # self._mu kron 1's vec is computed below by tiling mu.
+      hatmu = tf.tile(self._mu, [1, self._kw_kh])
+
+      if self._has_bias:
+        tildemu = append_homog(tf.reshape(hatmu, (-1,)))
+        mean_update = tf.expand_dims(tildemu, axis=1)
+      else:
+        mean_update = tf.reshape(hatmu, (-1, 1))
+
+      return tf.linalg.LinearOperatorLowRankUpdate(
+          cov_operator, mean_update, is_self_adjoint=True, is_square=True)
+
+  def get_cov_as_linear_operator(self):
+    return self._make_cov_linear_operator()
+
+  def get_cholesky(self, damping_func):
+    raise NotImplementedError("ConvInputSUAKroneckerFactor does not support"
+                              "cholesky factorization")
+
+  def get_cholesky_inverse(self, damping_func):
+    raise NotImplementedError("ConvInputSUAKroneckerFactor does not support"
+                              "cholesky inverse computation")
+
+  def register_cholesky(self):
+    raise NotImplementedError("ConvInputSUAKroneckerFactor does not support"
+                              "cholesky factorization")
+
+  def register_cholesky_inverse(self):
+    raise NotImplementedError("ConvInputSUAKroneckerFactor does not support"
+                              "cholesky inverse computation")
 
   def _get_data_device(self, tower):
     return self._inputs[tower].device

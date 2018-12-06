@@ -908,7 +908,8 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
                data_format=None,
                extract_patches_fn=None,
                sub_sample_inputs=None,
-               sub_sample_patches=None):
+               sub_sample_patches=None,
+               use_sua_approx_for_input_factor=False):
     """Creates a ConvKFCBasicFB block.
 
     Args:
@@ -933,6 +934,9 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
         the image patches are extracted. (Default: None)
       sub_sample_patches: `bool`, If `True` then subsample the extracted
         patches. (Default: None)
+      use_sua_approx_for_input_factor: `bool`, If `True` then use
+      `ConvInputSUAKroneckerFactor` for input factor. Otherwise use
+      `ConvInputKroneckerFactor`.  (Default: None)
     """
     self._padding = padding
     self._strides = maybe_tuple(strides)
@@ -940,6 +944,7 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
     self._data_format = data_format
     self._extract_patches_fn = extract_patches_fn
     self._has_bias = isinstance(params, (tuple, list))
+    self._use_sua_approx_for_input_factor = use_sua_approx_for_input_factor
 
     fltr = params[0] if self._has_bias else params
     self._filter_shape = tuple(fltr.shape.as_list())
@@ -958,11 +963,17 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
                                              self._strides,
                                              self._padding)
 
-    self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.ConvInputKroneckerFactor,
-        (inputs, self._filter_shape, self._padding, self._strides,
-         self._dilation_rate, self._data_format, self._extract_patches_fn,
-         self._has_bias, self._sub_sample_inputs, self._sub_sample_patches))
+    if self._use_sua_approx_for_input_factor:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.ConvInputSUAKroneckerFactor,
+          (inputs, self._filter_shape, self._has_bias))
+    else:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.ConvInputKroneckerFactor,
+          (inputs, self._filter_shape, self._padding, self._strides,
+           self._dilation_rate, self._data_format, self._extract_patches_fn,
+           self._has_bias, self._sub_sample_inputs, self._sub_sample_patches))
+
     self._output_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvOutputKroneckerFactor, (grads_list,))
 

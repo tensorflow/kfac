@@ -956,5 +956,291 @@ class FullyConnectedMultiKFTest(tf.test.TestCase):
       self.assertAllClose([[3, 3.5], [3.5, 5.5]], new_cov)
 
 
+class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
+
+  def setUp(self):
+    tf.reset_default_graph()
+    batch_size = 10
+    in_dim = 3
+    kernel_width = 2
+    self.in_channels = 2
+    out_channels = 1
+    self.damping_val = 0.03
+    self.kw_kh = kernel_width**2
+    self.filter_shape = (kernel_width, kernel_width, self.in_channels,
+                         out_channels)
+
+    self.inputs = tf.random_uniform(
+        (batch_size, in_dim, in_dim, self.in_channels), seed=0)
+    damping_id = ('test', 'cov')
+
+    def compute_damping():
+      return (self.damping_val, self.damping_val)
+
+    self.damping_func = fb._package_func(lambda: compute_damping()[0],
+                                         damping_id + ('ref', 0))
+
+  def testConv2dOpsNoBiasZeroMean(self):
+    ff.set_global_constants(assume_zero_mean_activations=True)
+    factor = ff.ConvInputSUAKroneckerFactor(
+        inputs=(self.inputs,),
+        filter_shape=self.filter_shape,
+        has_bias=False)
+    factor.instantiate_cov_variables()
+    factor.register_matpower(-1., self.damping_func)
+
+    factor.instantiate_inv_variables()
+    self.assertEqual([self.in_channels, self.in_channels],
+                     factor.cov.shape.as_list())
+    cov_update_op = factor.make_covariance_update_op(0.0)
+    inv_update_op = factor.make_inverse_update_ops()
+    inv_matrix = factor.get_inv_vars()[0]
+
+    fisher_inv = factor.get_matpower(-1., self.damping_func).to_dense()
+    inv_dim = self.kw_kh * self.in_channels
+    self.assertEqual([inv_dim, inv_dim], fisher_inv.shape.as_list())
+
+    cov_damping = factor.get_matpower(1, self.damping_func).to_dense()
+    cov_trace = factor.get_cov_as_linear_operator().trace()
+
+    with self.test_session() as sess:
+      sess.run(tf.global_variables_initializer())
+      _, inputs_ = sess.run([cov_update_op, self.inputs])
+      sess.run([inv_update_op])
+      cov_ = sess.run(factor.cov)
+      self.assertMatrixRank(self.in_channels, cov_)
+
+      inputs_ = np.reshape(inputs_, (-1, self.in_channels))
+      mean_ = (1. / inputs_.shape[0]) * np.sum(inputs_, axis=0, keepdims=True)
+      expected_cov_ = (1. / (inputs_.shape[0])) * np.matmul(
+          inputs_.transpose(), inputs_) - np.matmul(mean_.transpose(), mean_)
+      self.assertAllClose(expected_cov_, cov_)
+
+      expected_cov_damping_ = expected_cov_ + self.damping_val * np.eye(
+          self.in_channels)
+      expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
+      inv_matrix_ = sess.run(inv_matrix)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+
+      quant_1 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
+      fisher_inv_ = sess.run(fisher_inv)
+      expected_fisher_inv_ = np.linalg.inv(quant_1)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+
+      expected_cov_trace_ = np.kron(expected_cov_, np.eye(self.kw_kh)).trace()
+      cov_trace_ = sess.run(cov_trace)
+      self.assertAlmostEqual(cov_trace_, expected_cov_trace_, places=5)
+
+      cov_damping_ = sess.run(cov_damping)
+      self.assertAllClose(quant_1, cov_damping_)
+      expected_id_ = np.matmul(cov_damping_, fisher_inv_)
+      self.assertAllClose(expected_id_, np.eye(expected_id_.shape[0]))
+
+  def testConv2dOpsBiasZeroMean(self):
+    ff.set_global_constants(assume_zero_mean_activations=True)
+    factor = ff.ConvInputSUAKroneckerFactor(
+        inputs=(self.inputs,),
+        filter_shape=self.filter_shape,
+        has_bias=True)
+
+    factor.instantiate_cov_variables()
+    factor.register_matpower(-1., self.damping_func)
+
+    factor.instantiate_inv_variables()
+    self.assertEqual([self.in_channels, self.in_channels],
+                     factor.cov.shape.as_list())
+
+    cov_update_op = factor.make_covariance_update_op(0.0)
+    inv_update_op = factor.make_inverse_update_ops()
+    inv_matrix = factor.get_inv_vars()[0]
+
+    fisher_inv = factor.get_matpower(-1., self.damping_func).to_dense()
+    inv_dim = self.kw_kh * self.in_channels + 1
+    self.assertEqual([inv_dim, inv_dim], fisher_inv.shape.as_list())
+
+    cov_trace = factor.get_cov_as_linear_operator().trace()
+    cov_damping = factor.get_matpower(1, self.damping_func).to_dense()
+
+    with self.test_session() as sess:
+      sess.run(tf.global_variables_initializer())
+      _, inputs_ = sess.run([cov_update_op, self.inputs])
+      sess.run([inv_update_op])
+      cov_ = sess.run(factor.cov)
+      self.assertMatrixRank(self.in_channels, cov_)
+
+      inputs_ = np.reshape(inputs_, (-1, self.in_channels))
+      mean_ = (1. / inputs_.shape[0]) * np.sum(inputs_, axis=0, keepdims=True)
+      expected_cov_ = (1. / (inputs_.shape[0])) * np.matmul(
+          inputs_.transpose(), inputs_) - np.matmul(mean_.transpose(), mean_)
+      self.assertAllClose(expected_cov_, cov_)
+
+      expected_cov_damping_ = expected_cov_ + self.damping_val * np.eye(
+          self.in_channels)
+      expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
+      inv_matrix_ = sess.run(inv_matrix)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+
+      quant_0 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
+      quant_1 = np.zeros((inv_dim, inv_dim))
+      quant_1[:-1, :-1] = quant_0
+      quant_1[-1, -1] = self.damping_val
+
+      fisher_inv_ = sess.run(fisher_inv)
+      expected_fisher_inv_ = np.linalg.inv(quant_1)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+
+      expected_cov_trace_ = np.kron(expected_cov_, np.eye(self.kw_kh),).trace()
+      cov_trace_ = sess.run(cov_trace)
+      self.assertAlmostEqual(cov_trace_, expected_cov_trace_, places=5)
+
+      cov_damping_ = sess.run(cov_damping)
+      self.assertAllClose(quant_1, cov_damping_)
+      expected_id_ = np.matmul(cov_damping_, fisher_inv_)
+      self.assertAllClose(expected_id_, np.eye(expected_id_.shape[0]))
+
+  def testConv2OpsNoBias(self):
+    ff.set_global_constants(assume_zero_mean_activations=False)
+    factor = ff.ConvInputSUAKroneckerFactor(
+        inputs=(self.inputs,),
+        filter_shape=self.filter_shape,
+        has_bias=False)
+
+    factor.instantiate_cov_variables()
+    factor.register_matpower(-1., self.damping_func)
+
+    factor.instantiate_inv_variables()
+    self.assertEqual([self.in_channels, self.in_channels],
+                     factor.cov.shape.as_list())
+
+    cov_update_op = factor.make_covariance_update_op(0.0)
+    inv_update_op = factor.make_inverse_update_ops()
+    inv_matrix = factor.get_inv_vars()[0]
+
+    fisher_inv_opeartor = factor.get_matpower(-1., self.damping_func)
+    fisher_inv = fisher_inv_opeartor.to_dense()
+    inv_dim = self.kw_kh * self.in_channels
+    self.assertEqual([inv_dim, inv_dim], fisher_inv.shape.as_list())
+
+    input_tensor = tf.random_uniform(shape=(inv_dim, 1), maxval=10.)
+    output_tensor = fisher_inv_opeartor.matmul(input_tensor)
+
+    cov_trace = factor.get_cov_as_linear_operator().trace()
+    cov_damping = factor.get_matpower(1, self.damping_func).to_dense()
+
+    with self.test_session() as sess:
+      sess.run(tf.global_variables_initializer())
+      _, inputs_ = sess.run([cov_update_op, self.inputs])
+      sess.run([inv_update_op])
+      cov_ = sess.run(factor.cov)
+      self.assertMatrixRank(self.in_channels, cov_)
+
+      inputs_ = np.reshape(inputs_, (-1, self.in_channels))
+      mean_ = (1. / inputs_.shape[0]) * np.sum(inputs_, axis=0, keepdims=True)
+      expected_cov_ = (1. / (inputs_.shape[0])) * np.matmul(
+          inputs_.transpose(), inputs_) - np.matmul(mean_.transpose(), mean_)
+      self.assertAllClose(expected_cov_, cov_)
+
+      expected_cov_damping_ = expected_cov_ + self.damping_val * np.eye(
+          self.in_channels)
+      expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
+      inv_matrix_ = sess.run(inv_matrix)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+
+      quant_1 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
+      quant_2 = np.kron((1. / inputs_.shape[0]) * np.sum(inputs_, axis=0),
+                        np.ones(self.kw_kh))
+      quant_3 = np.expand_dims(quant_2, axis=1)
+
+      fisher_inv_ = sess.run(fisher_inv)
+      fisher_ = quant_1 + np.matmul(quant_3, quant_3.transpose())
+      expected_fisher_inv_ = np.linalg.inv(fisher_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+
+      input_tensor_, output_tensor_ = sess.run([input_tensor, output_tensor])
+      expected_output_tensor_ = np.matmul(expected_fisher_inv_, input_tensor_)
+      self.assertAllClose(output_tensor_, expected_output_tensor_, atol=1e-5)
+
+      expected_cov_trace_ = np.kron(expected_cov_, np.eye(
+          self.kw_kh)).trace() + np.dot(quant_2, quant_2)
+      cov_trace_ = sess.run(cov_trace)
+      self.assertAlmostEqual(cov_trace_, expected_cov_trace_, places=5)
+
+      cov_damping_ = sess.run(cov_damping)
+      self.assertAllClose(fisher_, cov_damping_)
+      expected_id_ = np.matmul(cov_damping_, fisher_inv_)
+      self.assertAllClose(expected_id_, np.eye(expected_id_.shape[0]))
+
+  def testConv2dOpsBias(self):
+    ff.set_global_constants(assume_zero_mean_activations=False)
+    factor = ff.ConvInputSUAKroneckerFactor(
+        inputs=(self.inputs,),
+        filter_shape=self.filter_shape,
+        has_bias=True)
+
+    factor.instantiate_cov_variables()
+    factor.register_matpower(-1., self.damping_func)
+
+    factor.instantiate_inv_variables()
+    self.assertEqual([self.in_channels, self.in_channels],
+                     factor.cov.shape.as_list())
+
+    cov_update_op = factor.make_covariance_update_op(0.0)
+    inv_update_op = factor.make_inverse_update_ops()
+    inv_matrix = factor.get_inv_vars()[0]
+
+    fisher_inv = factor.get_matpower(-1., self.damping_func).to_dense()
+    inv_dim = self.kw_kh * self.in_channels + 1
+    self.assertEqual([inv_dim, inv_dim], fisher_inv.shape.as_list())
+
+    cov_trace = factor.get_cov_as_linear_operator().trace()
+    cov_damping = factor.get_matpower(1, self.damping_func).to_dense()
+
+    with self.test_session() as sess:
+      sess.run(tf.global_variables_initializer())
+      _, inputs_ = sess.run([cov_update_op, self.inputs])
+      sess.run([inv_update_op])
+      cov_ = sess.run(factor.cov)
+      self.assertMatrixRank(self.in_channels, cov_)
+
+      inputs_ = np.reshape(inputs_, (-1, self.in_channels))
+      mean_ = (1. / inputs_.shape[0]) * np.sum(inputs_, axis=0, keepdims=True)
+      expected_cov_ = (1. / (inputs_.shape[0])) * np.matmul(
+          inputs_.transpose(), inputs_) - np.matmul(mean_.transpose(), mean_)
+      self.assertAllClose(expected_cov_, cov_)
+
+      expected_cov_damping_ = expected_cov_ + self.damping_val * np.eye(
+          self.in_channels)
+      expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
+      inv_matrix_ = sess.run(inv_matrix)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+
+      quant_0 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
+      quant_1 = np.zeros((inv_dim, inv_dim))
+      quant_1[:-1, :-1] = quant_0
+      quant_1[-1, -1] = self.damping_val
+
+      quant_2 = np.kron((1. / inputs_.shape[0]) * np.sum(inputs_, axis=0),
+                        np.ones(self.kw_kh))
+      quant_3 = np.ones((inv_dim,))
+      quant_3[:-1] = quant_2
+      quant_3 = np.expand_dims(quant_3, axis=1)
+
+      fisher_inv_ = sess.run(fisher_inv)
+      fisher_ = quant_1 + np.matmul(quant_3, quant_3.transpose())
+      expected_fisher_inv_ = np.linalg.inv(fisher_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+
+      expected_cov_trace_ = np.kron(expected_cov_, np.eye(
+          self.kw_kh)).trace() + np.dot(quant_2, quant_2) + 1.
+      cov_trace_ = sess.run(cov_trace)
+      self.assertAlmostEqual(cov_trace_, expected_cov_trace_, places=5)
+
+      cov_damping_ = sess.run(cov_damping)
+      self.assertAllClose(fisher_, cov_damping_)
+      expected_id_ = np.matmul(cov_damping_, fisher_inv_)
+      self.assertAllClose(
+          expected_id_, np.eye(expected_id_.shape[0]), atol=1e-5)
+
+
 if __name__ == '__main__':
   tf.test.main()
