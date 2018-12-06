@@ -82,10 +82,11 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           specified value. May only be used with momentum type 'regular'.
           (Default: None)
       name: The name for this optimizer. (Default: 'KFAC')
-      estimation_mode: The type of estimator to use for the Fishers.  Can be
-          'gradients', 'empirical', 'curvature_propagation', or 'exact'.
-          (Default: 'gradients'). See the doc-string for FisherEstimator for
-          more a more detailed description of these options.
+      estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
+          'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
+          'exact', or 'exact_GGN'. (Default: 'gradients'). See the doc-string
+          for FisherEstimator for more a more detailed description of these
+          options.
       colocate_gradients_with_ops: Whether we should request gradients we
           compute in the estimator be colocated with their respective ops.
           (Default: True)
@@ -246,6 +247,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
   @property
   def layers(self):
     return self._layers
+
+  @property
+  def mat_type(self):
+    return self._fisher_est.mat_type
 
   @property
   def damping(self):
@@ -450,9 +455,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       qmodel(d) = (1/2) * d^T * B * d + grad^T*d + L(theta) .
 
     Unlike in the KL clipping approach we use the non-approximated quadratic
-    model where the curvature matrix C is the true Fisher on the current
-    mini-batch (computed without any approximations beyond mini-batch sampling),
-    with the usual Tikhonov damping/regularization applied,
+    model where the curvature matrix C is the true Fisher (or GGN) on the
+    current mini-batch (computed without any approximations beyond mini-batch
+    sampling), with the usual Tikhonov damping/regularization applied,
 
       C = F + damping * I
 
@@ -485,8 +490,14 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
     # compute the matrix-vector products with the transposed Fisher factor
-    fft_precon_grads = cmvpc.multiply_fisher_factor_transpose(precon_grads)
-    fft_prev_updates = cmvpc.multiply_fisher_factor_transpose(prev_updates)
+    # (or GGN factor)
+    if self.mat_type == "Fisher":
+      fft_precon_grads = cmvpc.multiply_fisher_factor_transpose(precon_grads)
+      fft_prev_updates = cmvpc.multiply_fisher_factor_transpose(prev_updates)
+    elif self.mat_type == "GGN":
+      fft_precon_grads = cmvpc.multiply_ggn_factor_transpose(precon_grads)
+      fft_prev_updates = cmvpc.multiply_ggn_factor_transpose(prev_updates)
+
     batch_size = tf.cast(self._batch_size, dtype=fft_precon_grads[0].dtype)
 
     # compute the entries of the 2x2 matrix

@@ -159,14 +159,15 @@ class FisherEstimator(object):
         "exact": self._get_grads_lists_exact,
         "exact_GGN": self._get_grads_lists_exact
     }
-    self._gradient_fns_extra_args = {
-        "gradients": {},
-        "empirical": {},
-        "curvature_prop": {"mode": "fisher"},
-        "curvature_prop_GGN": {"mode": "GGN"},
-        "exact": {"mode": "fisher"},
-        "exact_GGN": {"mode": "GGN"},
+    self._mat_type_table = {
+        "gradients": "Fisher",
+        "empirical": "Empirical_Fisher",
+        "curvature_prop": "Fisher",
+        "curvature_prop_GGN": "GGN",
+        "exact": "Fisher",
+        "exact_GGN": "GGN",
     }
+
     self._colocate_gradients_with_ops = colocate_gradients_with_ops
 
     self._exps = exps
@@ -206,6 +207,10 @@ class FisherEstimator(object):
       return self._layer_collection()
     else:
       return self._layer_collection
+
+  @property
+  def mat_type(self):
+    return self._mat_type_table[self._estimation_mode]
 
   @abc.abstractmethod
   def make_vars_and_create_op_thunks(self, scope=None):
@@ -356,8 +361,7 @@ class FisherEstimator(object):
 
     try:
       grads_lists = self._gradient_fns[self._estimation_mode](
-          tensors_to_compute_grads,
-          **self._gradient_fns_extra_args[self._estimation_mode])
+          tensors_to_compute_grads)
     except KeyError:
       raise ValueError("Unrecognized value {} for estimation_mode.".format(
           self._estimation_mode))
@@ -513,12 +517,12 @@ class FisherEstimator(object):
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
     return tuple((grad,) for grad in grads_all)
 
-  def _get_transformed_random_signs(self, mode="fisher"):
+  def _get_transformed_random_signs(self):
     """No docstring required."""
-    if mode == "fisher":
+    if self.mat_type == "Fisher":
       mult_func = lambda loss, index: loss.multiply_fisher_factor(index)
       inner_shape_func = lambda loss: loss.fisher_factor_inner_shape
-    elif mode == "GGN":
+    elif self.mat_type == "GGN":
       mult_func = lambda loss, index: loss.multiply_ggn_factor(index)
       inner_shape_func = lambda loss: loss.ggn_factor_inner_shape
 
@@ -530,9 +534,9 @@ class FisherEstimator(object):
                 loss, utils.generate_random_signs(inner_shape_func(loss))))
     return transformed_random_signs
 
-  def _get_grads_lists_curvature_prop(self, tensors, mode="fisher"):
+  def _get_grads_lists_curvature_prop(self, tensors):
     loss_inputs = list(loss.inputs for loss in self.layers.losses)
-    transformed_random_signs = self._get_transformed_random_signs(mode=mode)
+    transformed_random_signs = self._get_transformed_random_signs()
     grads_flat = tf.gradients(
         nest.flatten(loss_inputs),
         nest.flatten(tensors),
@@ -541,14 +545,14 @@ class FisherEstimator(object):
     grads_all = nest.pack_sequence_as(tensors, grads_flat)
     return tuple((grad,) for grad in grads_all)
 
-  def _get_grads_lists_exact(self, tensors, mode="fisher"):
+  def _get_grads_lists_exact(self, tensors):
     """No docstring required."""
-    if mode == "fisher":
+    if self.mat_type == "Fisher":
       # pylint: disable=g-long-lambda
       mult_func = (lambda loss, index:
                    loss.multiply_fisher_factor_replicated_one_hot(index))
       inner_shape_func = lambda loss: loss.fisher_factor_inner_static_shape
-    elif mode == "GGN":
+    elif self.mat_type == "GGN":
       # pylint: disable=g-long-lambda
       mult_func = (lambda loss, index:
                    loss.multiply_ggn_factor_replicated_one_hot(index))
