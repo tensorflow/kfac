@@ -66,5 +66,5 @@ def load_mnist(data_dir,
 
   dataset = tf.data.Dataset.from_tensor_slices((np.asarray(
       images, dtype=np.float32), np.asarray(labels, dtype=np.int64)))
-  return (dataset.repeat(num_epochs).shuffle(num_examples).batch(batch_size)
-          .make_one_shot_iterator().get_next())
+  dataset = dataset.repeat(num_epochs).shuffle(num_examples).batch(batch_size)
+  return tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()
