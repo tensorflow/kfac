@@ -257,11 +257,25 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     if self._damping:
       return self._damping
     else:
-      return self._damping_constant
+      return tf.constant(self._damping_constant)
 
   @property
   def damping_adaptation_interval(self):
     return self._damping_adaptation_interval
+
+  @property
+  def learning_rate(self):
+    if self._momentum_type == "qmodel":
+      return self._qmodel_learning_rate
+    else:
+      return tf.constant(self._learning_rate)
+
+  @property
+  def momentum(self):
+    if self._momentum_type == "qmodel":
+      return self._qmodel_momentum
+    else:
+      return tf.constant(self._momentum)
 
   def make_vars_and_create_op_thunks(self):
     """Make vars and create op thunks.
@@ -647,6 +661,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       # Compute optimal velocity update parameters according to quadratic model
       alpha, mu, q_model_assign_op = self._compute_qmodel_hyperparams_wrapper(
           grads_and_vars, precon_grads_and_vars)
+      self._qmodel_learning_rate = -tf.reshape(alpha, ())
+      self._qmodel_momentum = tf.reshape(mu, ())
 
       with tf.control_dependencies([q_model_assign_op]):
         return self._update_velocities(
