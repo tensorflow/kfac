@@ -81,38 +81,53 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         grad_loss=grad_loss)
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
-    cov_update_thunks, inv_update_thunks = self.make_vars_and_create_op_thunks()
-    counter = self.counter
-    prev_counter = tf.assign(
-        tf.get_variable(
-            "prev_counter", dtype=tf.int64, shape=(), trainable=False,
-            initializer=tf.zeros_initializer),
-        counter)
-    with tf.control_dependencies([prev_counter]):
-      update_counter = tf.assign_add(counter, 1, name="update_counter")
-      # GPU doesn't support mod so we allow TF to allocate this op
-      # automatically.
-      with tf.device(None):
-        should_do_cov_updates = tf.equal(tf.mod(prev_counter,
-                                                self._cov_update_every), 0)
-      maybe_cov_updates = tf.cond(
-          should_do_cov_updates,
-          lambda: tf.group([thunk() for thunk in cov_update_thunks]),
-          tf.no_op)
-    with tf.control_dependencies([maybe_cov_updates, update_counter]):
-      # GPU doesn't support mod so we allow TF to allocate this op
-      # automatically.
-      with tf.device(None):
-        should_do_inv_updates = tf.equal(tf.mod(prev_counter,
-                                                self._invert_every), 0)
-      maybe_inv_updates = tf.cond(
-          should_do_inv_updates,
-          lambda: tf.group([thunk() for thunk in inv_update_thunks]), tf.no_op)
-      with tf.control_dependencies([maybe_inv_updates]):
-        return super(PeriodicInvCovUpdateKfacOpt, self).apply_gradients(
-            grads_and_vars=grads_and_vars,
-            global_step=global_step,
-            name=name)
+    with tf.control_dependencies([self.kfac_update_ops()]):
+      return super(PeriodicInvCovUpdateKfacOpt, self).apply_gradients(
+          grads_and_vars=grads_and_vars,
+          global_step=global_step,
+          name=name)
+
+  def kfac_update_ops(self):
+    """Sets up the KFAC factor update ops.
+
+    Constructs the covariance and inverse ops, builds counter variables for
+    them, and then sets them up to run only every self._cov_update_every and
+    self._invert_every calls.
+
+    Returns:
+      An op that when run will run the update ops at their update frequencies.
+    """
+    with tf.variable_scope(self.get_name()):
+      (cov_update_thunks,
+       inv_update_thunks) = self.make_vars_and_create_op_thunks()
+      counter = self.counter
+      prev_counter = tf.assign(
+          tf.get_variable(
+              "prev_counter", dtype=tf.int64, shape=(), trainable=False,
+              initializer=tf.zeros_initializer),
+          counter)
+      with tf.control_dependencies([prev_counter]):
+        update_counter = tf.assign_add(counter, 1, name="update_counter")
+        # GPU doesn't support mod so we allow TF to allocate this op
+        # automatically.
+        with tf.device(None):
+          should_do_cov_updates = tf.equal(tf.mod(prev_counter,
+                                                  self._cov_update_every), 0)
+        maybe_cov_updates = tf.cond(
+            should_do_cov_updates,
+            lambda: tf.group([thunk() for thunk in cov_update_thunks]),
+            tf.no_op)
+      with tf.control_dependencies([maybe_cov_updates, update_counter]):
+        # GPU doesn't support mod so we allow TF to allocate this op
+        # automatically.
+        with tf.device(None):
+          should_do_inv_updates = tf.equal(tf.mod(prev_counter,
+                                                  self._invert_every), 0)
+        maybe_inv_updates = tf.cond(
+            should_do_inv_updates,
+            lambda: tf.group([thunk() for thunk in inv_update_thunks]),
+            tf.no_op)
+        return maybe_inv_updates
 
   @property
   def counter(self):
