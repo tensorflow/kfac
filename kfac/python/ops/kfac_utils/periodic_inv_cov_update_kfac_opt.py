@@ -104,7 +104,7 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
       prev_counter = tf.assign(
           tf.get_variable(
               "prev_counter", dtype=tf.int64, shape=(), trainable=False,
-              initializer=tf.zeros_initializer),
+              initializer=tf.zeros_initializer, use_resource=True),
           counter)
       with tf.control_dependencies([prev_counter]):
         update_counter = tf.assign_add(counter, 1, name="update_counter")
@@ -135,6 +135,6 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
       with tf.variable_scope("periodic_counter", reuse=tf.AUTO_REUSE):
         self._counter = tf.get_variable(
             "counter", dtype=tf.int64, shape=(), trainable=False,
-            initializer=tf.zeros_initializer)
+            initializer=tf.zeros_initializer, use_resource=True)
 
     return self._counter

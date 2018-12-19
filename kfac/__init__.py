@@ -30,6 +30,7 @@ from kfac.python.ops import optimizer
 from kfac.python.ops import utils
 from kfac.python.ops.kfac_utils import async_inv_cov_update_kfac_opt
 from kfac.python.ops.kfac_utils import data_reader
+from kfac.python.ops.kfac_utils import data_reader_alt
 from kfac.python.ops.kfac_utils import kfac_multi_run_opt
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
 

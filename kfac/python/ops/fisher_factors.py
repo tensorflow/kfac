@@ -458,7 +458,8 @@ class FisherFactor(object):
           initializer=self._cov_initializer,
           shape=self._cov_shape,
           trainable=False,
-          dtype=self._dtype)
+          dtype=self._dtype,
+          use_resource=True)
       self._acc_cov = utils.AccumulatorVariable(
           name="acc_cov",
           var=self._cov)
@@ -694,7 +695,8 @@ class DenseSquareMatrixFactor(FisherFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
       assert (exp, damping_id) not in self._matpower_by_exp_and_damping
       self._matpower_by_exp_and_damping[(exp, damping_id)] = matpower
 
@@ -707,7 +709,8 @@ class DenseSquareMatrixFactor(FisherFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
       assert damping_id not in self._cholesky_by_damping
       self._cholesky_by_damping[damping_id] = chol
 
@@ -720,7 +723,8 @@ class DenseSquareMatrixFactor(FisherFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
       assert damping_id not in self._cholesky_inverse_by_damping
       self._cholesky_inverse_by_damping[damping_id] = cholinv
 
@@ -801,14 +805,14 @@ class DenseSquareMatrixFactor(FisherFactor):
   def get_matpower(self, exp, damping_func):
     # Note that this function returns a variable which gets updated by the
     # inverse ops.  It may be stale / inconsistent with the latest value of
-    # self.cov.
+    # self.cov (except when exp == 1).
     if exp != 1:
       damping_id = graph_func_to_id(damping_func)
       matpower = self._matpower_by_exp_and_damping[(exp, damping_id)]
     else:
-      matpower = self.cov
-      identity = tf.eye(matpower.shape.as_list()[0], dtype=matpower.dtype)
-      matpower += tf.cast(damping_func(), dtype=matpower.dtype)*identity
+      cov = self.cov
+      identity = tf.eye(cov.shape.as_list()[0], dtype=cov.dtype)
+      matpower = cov + tf.cast(damping_func(), dtype=self.cov.dtype)*identity
 
     assert matpower.shape.ndims == 2
     return lo.LinearOperatorFullMatrix(matpower,
@@ -1646,7 +1650,8 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
             initializer=tf.zeros_initializer,
             shape=(self._in_channels, 1),  # number of input channels.
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
         self._acc_mu = utils.AccumulatorVariable(name="acc_mu", var=self._mu)
 
   def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
@@ -1742,6 +1747,9 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
       return cov_inv_mu, (1. / (1. + hatmu_t_cov_inv_hatmu))
 
   def get_matpower(self, exp, damping_func):
+    # Note that this function returns a variable which gets updated by the
+    # inverse ops.  It may be stale / inconsistent with the latest value of
+    # self.cov (except when exp == 1).
     if exp == 1:
       return self._make_cov_linear_operator(
           damping=tf.cast(damping_func(), dtype=self._dtype))
@@ -1870,7 +1878,8 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
 
       assert (exp, damping_id) not in self._matpower_by_exp_and_damping
       self._matpower_by_exp_and_damping[(exp, damping_id)] = matpower
@@ -1880,7 +1889,8 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
           initializer=tf.zeros_initializer,
           shape=(),
           trainable=False,
-          dtype=self._dtype)
+          dtype=self._dtype,
+          use_resource=True)
 
       if not ASSUME_ZERO_MEAN_ACTIVATIONS:
         self._cov_inv_mu_by_damping_id[damping_id] = tf.get_variable(
@@ -1888,14 +1898,16 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
             initializer=tf.zeros_initializer,
             shape=self._mu.shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
 
         self._rank_one_update_scale_by_damping_id[damping_id] = tf.get_variable(
             "rank_one_update_scale_{}_{}".format(exp_string, damping_string),
             initializer=tf.zeros_initializer,
             shape=(),
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
 
   def _make_cov_linear_operator(self, damping=None):
     """Returns cov as a linear operator.
@@ -2174,7 +2186,8 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             initializer=tf.zeros_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
         self._acc_cov_dt1 = utils.AccumulatorVariable(
             name="acc_cov_dt1",
             var=self._cov_dt1)
@@ -2204,13 +2217,15 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
         psi = tf.get_variable(
             "psi_damp{}".format(damping_string),
             initializer=tf.ones_initializer,
             shape=self._vec_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
 
       assert damping_id not in self._option1quants_by_damping
       self._option1quants_by_damping[damping_id] = (Lmat, psi)
@@ -2227,19 +2242,22 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
         Kmat = tf.get_variable(  # pylint: disable=invalid-name
             "Kmat_damp{}".format(damping_string),
             initializer=inverse_initializer,
             shape=self._cov_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
         mu = tf.get_variable(
             "mu_damp{}".format(damping_string),
             initializer=tf.ones_initializer,
             shape=self._vec_shape,
             trainable=False,
-            dtype=self._dtype)
+            dtype=self._dtype,
+            use_resource=True)
 
       assert damping_id not in self._option2quants_by_damping
       self._option2quants_by_damping[damping_id] = (Pmat, Kmat, mu)

@@ -90,7 +90,8 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
             shape=(),
             dtype=tf.int64,
             initializer=tf.zeros_initializer,
-            trainable=False), counter)
+            trainable=False,
+            use_resource=True), counter)
     with tf.control_dependencies([prev_counter]):
       update_counter = tf.assign_add(counter, 1, name="update_counter")
 
@@ -143,6 +144,7 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
             shape=(),
             dtype=tf.int64,
             initializer=tf.zeros_initializer,
-            trainable=False)
+            trainable=False,
+            use_resource=True)
 
     return self._counter

@@ -21,5 +21,6 @@ Contributors (past and present):
 *   Olga Wichrowskaa (olganw@google.com)
 *   Rishabh Kabra (rkabra@google.com)
 *   Roger Grosse (rgrosse@google.com)
+*   Soham De (sohamde@google.com)
 *   Vikram Tankasali (tvikram@google.com)
 *   Zack Nado (znado@google.com)

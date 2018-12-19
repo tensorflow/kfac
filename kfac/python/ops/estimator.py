@@ -89,59 +89,59 @@ class FisherEstimator(object):
 
     Args:
       variables: A `list` of variables or `callable` which returns the variables
-          for which to estimate the Fisher. This must match the variables
-          registered in layer_collection (if it is not None).
+        for which to estimate the Fisher. This must match the variables
+        registered in layer_collection (if it is not None).
       cov_ema_decay: The decay factor used when calculating the covariance
-          estimate moving averages.
-      damping: float. The damping factor used to stabilize training due to
-          errors in the local approximation with the Fisher information matrix,
-          and to regularize the update direction by making it closer to the
-          gradient. (Higher damping means the update looks more like a standard
-          gradient update - see Tikhonov regularization.)
+        estimate moving averages.
+      damping: float or 0D Tensor. The damping factor used to stabilize training
+        due to errors in the local approximation with the Fisher information
+        matrix, and to regularize the update direction by making it closer to
+        the gradient. (Higher damping means the update looks more like a
+        standard gradient update - see Tikhonov regularization.)
       layer_collection: Either layer collection object or a function which
-          returns an instance to `LayerCollection` object, which holds for the
-          Fisher blocks, Kronecker factors, and losses associated with the
-          graph.
+        returns an instance to `LayerCollection` object, which holds for the
+        Fisher blocks, Kronecker factors, and losses associated with the
+        graph.
       exps: List of floats or ints. These represent the different matrix
-          powers of the approximate Fisher that the FisherEstimator will be able
-          to multiply vectors by. If the user asks for a matrix power other
-          one of these (or 1, which is always supported), there will be a
-          failure. (Default: (-1,))
+        powers of the approximate Fisher that the FisherEstimator will be able
+        to multiply vectors by. If the user asks for a matrix power other
+        one of these (or 1, which is always supported), there will be a
+        failure. (Default: (-1,))
       num_steps_per_cov_update: int, The updates to the covariance estimates
         are accumulated for `num_steps_per_cov_update` steps before being
         applied (using a decayed average). This is useful when accumulating
         update information across multiple session.run calls.
         (Default: 1)
       estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
-          'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
-          'exact', or 'exact_GGN'. (Default: 'gradients'). 'gradients' is the
-          basic estimation approach from the original K-FAC paper.
-          'empirical' computes the 'empirical' Fisher information matrix (which
-          uses the data's distribution for the targets, as opposed to the true
-          Fisher which uses the model's distribution) and requires that each
-          registered loss have specified targets. 'curvature_propagation' is a
-          method which estimates the Fisher using self-products of random 1/-1
-          vectors times "half-factors" of the Fisher, as described here:
-          https://arxiv.org/abs/1206.6464 . 'exact' is the obvious
-          generalization of Curvature Propagation to compute the exact Fisher
-          (modulo any additional diagonal or Kronecker approximations) by
-          looping over one-hot vectors for each coordinate of the output
-          instead of using 1/-1 vectors.  It is more expensive to compute than
-          the other three options by a factor equal to the output dimension,
-          roughly speaking. Finally, 'curvature_prop_GGN' and 'exact_GGN' are
-          analogous to 'curvature_prop' and 'exact', but estimate the
-          Generalized Gauss-Newton matrix (GGN).
+        'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
+        'exact', or 'exact_GGN'. (Default: 'gradients'). 'gradients' is the
+        basic estimation approach from the original K-FAC paper.
+        'empirical' computes the 'empirical' Fisher information matrix (which
+        uses the data's distribution for the targets, as opposed to the true
+        Fisher which uses the model's distribution) and requires that each
+        registered loss have specified targets. 'curvature_propagation' is a
+        method which estimates the Fisher using self-products of random 1/-1
+        vectors times "half-factors" of the Fisher, as described here:
+        https://arxiv.org/abs/1206.6464 . 'exact' is the obvious
+        generalization of Curvature Propagation to compute the exact Fisher
+        (modulo any additional diagonal or Kronecker approximations) by
+        looping over one-hot vectors for each coordinate of the output
+        instead of using 1/-1 vectors.  It is more expensive to compute than
+        the other three options by a factor equal to the output dimension,
+        roughly speaking. Finally, 'curvature_prop_GGN' and 'exact_GGN' are
+        analogous to 'curvature_prop' and 'exact', but estimate the
+        Generalized Gauss-Newton matrix (GGN).
       colocate_gradients_with_ops: Whether we should request gradients be
-          colocated with their respective ops. (Default: True)
+        colocated with their respective ops. (Default: True)
       name: A string. A name given to this estimator, which is added to the
-          variable scope when constructing variables and ops.
-          (Default: "FisherEstimator")
+        variable scope when constructing variables and ops.
+        (Default: "FisherEstimator")
       compute_cholesky: Bool. Whether or not the FisherEstimator will be
-          able to multiply vectors by the Cholesky factor.
-          (Default: False)
+        able to multiply vectors by the Cholesky factor.
+        (Default: False)
       compute_cholesky_inverse: Bool. Whether or not the FisherEstimator
-          will be able to multiply vectors by the Cholesky factor inverse.
-          (Default: False)
+        will be able to multiply vectors by the Cholesky factor inverse.
+        (Default: False)
     Raises:
       ValueError: If no losses have been registered with layer_collection.
     """

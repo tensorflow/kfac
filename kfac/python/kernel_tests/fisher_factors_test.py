@@ -259,19 +259,27 @@ class InverseProvidingFactorTest(tf.test.TestCase):
 
       factor.instantiate_inv_variables()
 
-      inv = factor.get_inverse(damping_funcs[0]).to_dense()
-      self.assertEqual(inv, factor.get_inverse(damping_funcs[1]).to_dense())
-      self.assertNotEqual(inv, factor.get_inverse(damping_funcs[2]).to_dense())
-      self.assertEqual(factor.get_inverse(damping_funcs[2]).to_dense(),
-                       factor.get_inverse(damping_funcs[3]).to_dense())
+      inv = factor.get_inverse(damping_funcs[0]).to_dense().op.inputs[0]
+      self.assertEqual(
+          inv, factor.get_inverse(damping_funcs[1]).to_dense().op.inputs[0])
+      self.assertNotEqual(
+          inv, factor.get_inverse(damping_funcs[2]).to_dense().op.inputs[0])
+      self.assertEqual(
+          factor.get_inverse(damping_funcs[2]).to_dense().op.inputs[0],
+          factor.get_inverse(damping_funcs[3]).to_dense().op.inputs[0])
+
       factor_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                       factor_var_scope)
-      factor_tensors = (tf.convert_to_tensor(var) for var in factor_vars)
+      factor_tensors = (tf.convert_to_tensor(var).op.inputs[0]
+                        for var in factor_vars)
 
-      self.assertEqual(set([inv,
-                            factor.get_inverse(damping_funcs[2]).to_dense()]),
-                       set(factor_tensors))
-      self.assertEqual(shape, inv.get_shape())
+      self.assertEqual(
+          set([inv,
+               factor.get_inverse(damping_funcs[2]).to_dense().op.inputs[0]]),
+          set(factor_tensors))
+      self.assertEqual(
+          shape,
+          factor.get_inverse(damping_funcs[0]).to_dense().get_shape())
 
   def testRegisterMatpower(self):
     with tf.Graph().as_default():
@@ -293,12 +301,14 @@ class InverseProvidingFactorTest(tf.test.TestCase):
       factor_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                       factor_var_scope)
 
-      factor_tensors = (tf.convert_to_tensor(var) for var in factor_vars)
+      factor_tensors = tuple(tf.convert_to_tensor(var).op.inputs[0]
+                             for var in factor_vars)
 
       matpower1 = factor.get_matpower(-0.5, damping_func_1).to_dense()
       matpower2 = factor.get_matpower(2, damping_func_2).to_dense()
 
-      self.assertEqual(set([matpower1, matpower2]), set(factor_tensors))
+      self.assertEqual(set([matpower1.op.inputs[0], matpower2.op.inputs[0]]),
+                       set(factor_tensors))
 
       self.assertEqual(shape, matpower1.get_shape())
       self.assertEqual(shape, matpower2.get_shape())
@@ -400,7 +410,7 @@ class FullFactorTest(tf.test.TestCase):
 
   def testFullFactorInitFloat64(self):
     with tf.Graph().as_default():
-      dtype = dtypes.float64_ref
+      dtype = dtypes.float64
       tf.set_random_seed(200)
       tensor = tf.ones((2, 3), dtype=dtype, name='a/b/c')
       factor = ff.FullFactor((tensor,), 32)
@@ -434,7 +444,7 @@ class NaiveDiagonalFactorTest(tf.test.TestCase):
 
   def testNaiveDiagonalFactorInitFloat64(self):
     with tf.Graph().as_default():
-      dtype = dtypes.float64_ref
+      dtype = dtypes.float64
       tf.set_random_seed(200)
       tensor = tf.ones((2, 3), dtype=dtype, name='a/b/c')
       factor = ff.NaiveDiagonalFactor((tensor,), 32)
@@ -599,7 +609,7 @@ class FullyConnectedKroneckerFactorTest(tf.test.TestCase):
   def _testFullyConnectedKroneckerFactorInit(self,
                                              has_bias,
                                              final_shape,
-                                             dtype=dtypes.float32_ref):
+                                             dtype=dtypes.float32):
     with tf.Graph().as_default():
       tf.set_random_seed(200)
       tensor = tf.ones((2, 3), dtype=dtype, name='a/b/c')
@@ -610,11 +620,11 @@ class FullyConnectedKroneckerFactorTest(tf.test.TestCase):
       self.assertEqual(final_shape, cov.get_shape().as_list())
 
   def testFullyConnectedKroneckerFactorInitNoBias(self):
-    for dtype in (dtypes.float32_ref, dtypes.float64_ref):
+    for dtype in (dtypes.float32, dtypes.float64):
       self._testFullyConnectedKroneckerFactorInit(False, [3, 3], dtype=dtype)
 
   def testFullyConnectedKroneckerFactorInitWithBias(self):
-    for dtype in (dtypes.float32_ref, dtypes.float64_ref):
+    for dtype in (dtypes.float32, dtypes.float64):
       self._testFullyConnectedKroneckerFactorInit(True, [4, 4], dtype=dtype)
 
   def testMakeCovarianceUpdateOpWithBias(self):
@@ -794,7 +804,7 @@ class ConvInputKroneckerFactorTest(ConvFactorTestCase):
 
   def testConvInputKroneckerFactorInitFloat64(self):
     with tf.Graph().as_default():
-      dtype = dtypes.float64_ref
+      dtype = dtypes.float64
       tensor = tf.ones((64, 1, 2, 3), name='a/b/c', dtype=tf.float64)
       factor = ff.ConvInputKroneckerFactor(
           (tensor,), filter_shape=(1, 2, 3, 4), padding='SAME', has_bias=True)
@@ -888,7 +898,7 @@ class ConvOutputKroneckerFactorTest(ConvFactorTestCase):
 
   def testConvOutputKroneckerFactorInitFloat64(self):
     with tf.Graph().as_default():
-      dtype = dtypes.float64_ref
+      dtype = dtypes.float64
       tf.set_random_seed(200)
       tensor = tf.ones((2, 3, 4, 5), dtype=dtype, name='a/b/c')
       factor = ff.ConvOutputKroneckerFactor(((tensor,),))
@@ -922,7 +932,7 @@ class FullyConnectedMultiKFTest(tf.test.TestCase):
 
   def testFullyConnectedMultiKFInitFloat64(self):
     with tf.Graph().as_default():
-      dtype = dtypes.float64_ref
+      dtype = dtypes.float64
       tf.set_random_seed(200)
       tensor = tf.ones((2, 3), dtype=dtype, name='a/b/c')
       factor = ff.FullyConnectedMultiKF(((tensor,),), has_bias=False)

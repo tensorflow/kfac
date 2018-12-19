@@ -12,7 +12,7 @@ than a carefully tuned fixed value, depending on the problem.
 [kfac_damp]: https://github.com/tensorflow/kfac/tree/master/docs/examples/parameters.md
 
 **Example code**:
-https://github.com/tensorflow/kfac/tree/master/kfac/examples/kfac_mnist_autoencoder_auto_damping.py
+https://github.com/tensorflow/kfac/tree/master/kfac/examples/autoencoder_auto_damping.py
 
 Using this method to auto tune damping requires changes to the basic KFAC
 training script, which are described below. We only highlight additional steps
@@ -27,16 +27,8 @@ Wrap the dataset into `CachedReader`. This allows us to access previous batch of
 data.
 
 ```python
-  # Load a dataset.
-  data_set = mnist.load_mnist(
-      FLAGS.data_dir,
-      num_epochs=FLAGS.num_epochs,
-      batch_size=_BATCH_SIZE,
-      flatten_images=True)
-  # Wrap the data set into cached_reader which provides variable sized training
-  # and caches the read train batch.
-  cached_reader = data_reader.CachedDataReader(data_set, _BATCH_SIZE)
-  cur_batch = cached_reader(batch_size)[0]
+    cached_reader = data_reader.CachedDataReader(dataset, max_batch_size)
+    minibatch = cached_reader(batch_size)
 ```
 
 ## 2. Build optimizer and set damping parameters
@@ -47,14 +39,12 @@ data.
       damping=150.,
       momentum=0.95,
       layer_collection=layer_collection,
-      batch_size=batch_size
-      )
-  # Set the damping parameters required to adapt damping.
-  optimizer.set_damping_adaptation_params(
+      batch_size=batch_size,
+      adapt_damping=True,
       prev_train_batch=cached_reader.cached_batch,
       is_chief=True,
       loss_fn=loss_fn,
-      damping_adaptation_decay=0.95,
+      damping_adaptation_decay=0.99,
       damping_adaptation_interval=FLAGS.damping_adaptation_interval,
   )
   train_op = optimizer.minimize(loss, global_step=global_step)

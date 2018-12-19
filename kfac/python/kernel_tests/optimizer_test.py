@@ -100,14 +100,16 @@ class OptimizerTest(tf.test.TestCase):
       # If the update already satisfies the norm constraint, there should
       # be no rescaling.
       opt = optimizer.KfacOptimizer(
-          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=10.)
+          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=10.,
+          name='KFAC_1')
       coeff = opt._update_clip_coeff(grads_and_vars, pgrads_and_vars)
       self.assertAlmostEqual(1., sess.run(coeff), places=5)
 
       # If the update violates the constraint, it should be rescaled to
       # be on the constraint boundary.
       opt = optimizer.KfacOptimizer(
-          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=0.5)
+          lrate, 0.2, dummy_layer_collection(), 0.3, norm_constraint=0.5,
+          name='KFAC_2')
       coeff = opt._update_clip_coeff(grads_and_vars, pgrads_and_vars)
       sq_norm_pgrad = opt._squared_fisher_norm(grads_and_vars, pgrads_and_vars)
       sq_norm_update = lrate**2 * coeff**2 * sq_norm_pgrad

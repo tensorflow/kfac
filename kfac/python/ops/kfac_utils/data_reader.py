@@ -16,7 +16,7 @@
 
 `VariableBatchReader` reads variable size data from a dataset.
 `CachedDataReader` on top of `VariableBatchReader` adds functionality to store
-the read batch.
+the read batch for use in the next session.run() call.
 """
 
 from __future__ import absolute_import
@@ -38,9 +38,10 @@ class VariableBatchReader(object):
     """Initializes class.
 
     Args:
-      dataset: Iterable of tensors.
-      max_batch_size: `int32` scalar tensor, Maximum batch size of the data that
-        can be retrieved from the data set.
+      dataset: List of Tensors representing the dataset, shuffled, repeated,
+        and batched into mini-batches of size at least `max_batch_size`.
+      max_batch_size: `int`. Maximum batch size of the data that can be
+        retrieved from the data set.
     """
     self._dataset = dataset
     self._max_batch_size = max_batch_size
@@ -58,7 +59,7 @@ class VariableBatchReader(object):
     """
     check_size = tf.assert_less_equal(
         batch_size,
-        self._max_batch_size,
+        tf.convert_to_tensor(self._max_batch_size, dtype=tf.int32),
         message='Data set read failure, Batch size greater than max allowed.'
     )
     with tf.control_dependencies([check_size]):
@@ -72,23 +73,27 @@ class CachedDataReader(VariableBatchReader):
     """Initializes class and creates variables for storing previous batch.
 
     Args:
-      dataset: Iterable of tensors.
-      max_batch_size: `int32` scalar tensor, Maximum batch size of the data that
-        can be retrieved from the data set.
+      dataset: List of Tensors representing the dataset, shuffled, repeated,
+        and batched into mini-batches of size at least `max_batch_size`.
+      max_batch_size: `int`. Maximum batch size of the data that can be
+        retrieved from the data set.
     """
     super(CachedDataReader, self).__init__(dataset, max_batch_size)
-    with tf.variable_scope('data_loader'):
-      self._cached_batch = [
+    with tf.variable_scope('cached_data_reader'):
+      self._cached_batch_storage = [
           tf.get_variable(
-              name='{}{}'.format('cached_batch_', i),
+              name='{}{}'.format('cached_batch_storage_', i),
               shape=[max_batch_size]+ var.shape.as_list()[1:],
               dtype=var.dtype,
-              trainable=False) for i, var in enumerate(self._dataset)
+              trainable=False,
+              use_resource=True) for i, var in enumerate(self._dataset)
       ]
       self._cached_batch_size = tf.get_variable(
-          name='cached_batch_size', shape=(), dtype=tf.int32, trainable=False)
-      self._cached_batch_op = _slice_data(self._cached_batch,
-                                          self._cached_batch_size)
+          name='cached_batch_size', shape=(), dtype=tf.int32, trainable=False,
+          use_resource=True)
+
+      self._cached_batch = _slice_data(self._cached_batch_storage,
+                                       self._cached_batch_size)
 
   def __call__(self, batch_size):
     """Reads `batch_size` data and stores the read batch.
@@ -102,19 +107,17 @@ class CachedDataReader(VariableBatchReader):
        Read data, An iterable of tensors with batch size equal to `batch_size`.
     """
     sliced_data = super(CachedDataReader, self).__call__(batch_size)
-    with tf.control_dependencies(sliced_data):
-      batch_size_assign = [tf.assign(self._cached_batch_size, batch_size)]
-      data_assign_op = [
-          tf.scatter_update(prev, tf.range(batch_size), cur)
-          for prev, cur in zip(self._cached_batch, sliced_data)
+
+    # We need to make sure we read the cached batch before we update it!
+    with tf.control_dependencies(self._cached_batch):
+      batch_size_assign_op = self._cached_batch_size.assign(batch_size)
+      data_assign_ops = [
+          prev[:batch_size].assign(cur)  # yes, this actually works
+          for prev, cur in zip(self._cached_batch_storage, sliced_data)
       ]
-      with tf.control_dependencies(data_assign_op + batch_size_assign):
+      with tf.control_dependencies(data_assign_ops + [batch_size_assign_op]):
         return [tf.identity(sdata) for sdata in sliced_data]
 
   @property
   def cached_batch(self):
-    return self._cached_batch_op
-
-  @property
-  def cached_batch_size(self):
-    return self._cached_batch_size
+    return self._cached_batch

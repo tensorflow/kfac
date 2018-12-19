@@ -67,6 +67,45 @@ _REPORT_EVERY = 10
 _USE_MANUAL_REG = False
 
 
+def _load_mnist(data_dir, num_epochs, batch_size, use_fake_data=False,
+                flatten_images=True):
+  """Loads MNIST dataset into memory.
+
+  Args:
+    data_dir: string. Directory to read MNIST examples from.
+    num_epochs: int. Number of passes to make over the dataset.
+    batch_size: int. Number of examples per minibatch.
+    use_fake_data: bool. If True, generate a synthetic dataset rather than
+      reading MNIST in.
+    flatten_images: bool. If True, [28, 28, 1]-shaped images are flattened into
+      [784]-shaped vectors.
+
+  Returns:
+    examples: Tensor of shape [batch_size, 784] if 'flatten_images' is
+      True, else [batch_size, 28, 28, 1]. Each row is one example.
+      Values in [0, 1].
+    labels: Tensor of shape [batch_size]. Indices of integer corresponding to
+      each example. Values in {0...9}.
+  """
+
+  if use_fake_data:
+    rng = np.random.RandomState(42)
+    num_examples = batch_size * 4
+    images = rng.rand(num_examples, 28 * 28)
+    if not flatten_images:
+      images = np.reshape(images, [num_examples, 28, 28, 1])
+    labels = rng.randint(10, size=num_examples)
+    dataset = tf.data.Dataset.from_tensor_slices((np.asarray(
+        images, dtype=np.float32), np.asarray(labels, dtype=np.int64)))
+  else:
+    dataset, num_examples = mnist.load_mnist_as_dataset(
+        data_dir, flatten_images=flatten_images)
+
+  dataset = (dataset.shuffle(num_examples).repeat(num_epochs)
+             .batch(batch_size).prefetch(5))
+  return tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()
+
+
 def fc_layer(layer_id, inputs, output_size):
   """Builds a fully connected layer.
 
@@ -582,12 +621,11 @@ def train_mnist_single_machine(data_dir,
   """
   # Load a dataset.
   tf.logging.info("Loading MNIST into memory.")
-  examples, labels = mnist.load_mnist(
-      data_dir,
-      num_epochs=num_epochs,
-      batch_size=128,
-      use_fake_data=use_fake_data,
-      flatten_images=False)
+  (examples, labels) = _load_mnist(data_dir,
+                                   num_epochs,
+                                   128,
+                                   use_fake_data=use_fake_data,
+                                   flatten_images=False)
 
   # Build a ConvNet.
   layer_collection = kfac.LayerCollection()
@@ -607,7 +645,7 @@ def train_mnist_single_machine(data_dir,
 
 
 def train_mnist_multitower(data_dir, num_epochs, num_towers,
-                           devices, use_fake_data=True,
+                           devices, use_fake_data=False,
                            session_config=None):
   """Train a ConvNet on MNIST.
 
@@ -620,8 +658,8 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
     data_dir: string. Directory to read MNIST examples from.
     num_epochs: int. Number of passes to make over the training set.
     num_towers: int. Number of towers.
-    use_fake_data: bool. If True, generate a synthetic dataset.
     devices: list of strings. List of devices to place the towers.
+    use_fake_data: bool. If True, generate a synthetic dataset.
     session_config: None or tf.ConfigProto. Configuration for tf.Session().
 
   Returns:
@@ -635,12 +673,12 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
   tf.logging.info(
       ("Loading MNIST into memory. Using batch_size = %d = %d towers * %d "
        "tower batch size.") % (batch_size, num_towers, tower_batch_size))
-  examples, labels = mnist.load_mnist(
-      data_dir,
-      num_epochs=num_epochs,
-      batch_size=batch_size,
-      use_fake_data=use_fake_data,
-      flatten_images=False)
+  (examples, labels) = _load_mnist(data_dir,
+                                   num_epochs,
+                                   batch_size,
+                                   use_fake_data=use_fake_data,
+                                   flatten_images=False)
+
   # Split minibatch across towers.
   examples = tf.split(examples, num_towers)
   labels = tf.split(labels, num_towers)
@@ -731,12 +769,11 @@ def train_mnist_distributed_sync_replicas(task_id,
   """
   # Load a dataset.
   tf.logging.info("Loading MNIST into memory.")
-  examples, labels = mnist.load_mnist(
-      data_dir,
-      num_epochs=num_epochs,
-      batch_size=128,
-      use_fake_data=use_fake_data,
-      flatten_images=False)
+  (examples, labels) = _load_mnist(data_dir,
+                                   num_epochs,
+                                   128,
+                                   use_fake_data=use_fake_data,
+                                   flatten_images=False)
 
   # Build a ConvNet.
   layer_collection = kfac.LayerCollection()
@@ -777,7 +814,7 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
   # Load a dataset.
   def input_fn():
     tf.logging.info("Loading MNIST into memory.")
-    return mnist.load_mnist(
+    return _load_mnist(
         data_dir,
         num_epochs=num_epochs,
         batch_size=64,
