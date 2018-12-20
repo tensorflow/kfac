@@ -48,10 +48,13 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
                **kwargs):
     """Initializes KfacMultiRunOpt.
 
+    See the docstring for `KfacOptimizer` class (in optimizer.py) for
+    complete list of arguments (there are many!).
+
     Args:
       invert_every: int, The inversion ops are run once every `invert_every`
         calls to optimizer.minimize, (Default: 10)
-      **kwargs: Arguments to `tensorflow_kfac.KfacOptimizer` class.
+      **kwargs: Arguments to `KfacOptimizer` class.
     """
     self._invert_every = invert_every
     super(KfacMultiRunOpt, self).__init__(**kwargs)

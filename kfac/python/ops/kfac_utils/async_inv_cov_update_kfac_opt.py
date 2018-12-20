@@ -53,6 +53,9 @@ class AsyncInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                **kwargs):
     """Initializes AsyncInvCovUpdateKfacOpt.
 
+    See the docstring for `KfacOptimizer` class (in optimizer.py) for
+    complete list of arguments (there are many!).
+
     Args:
       cov_devices: Iterable of device strings (e.g. '/gpu:0'). Covariance
         computations will be placed on these devices in a round-robin fashion.
@@ -65,7 +68,7 @@ class AsyncInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         threads will be set to half of length of number of ops to run
         asynchronously (Capped at `_MAX_NUM_COV_INV_UPDATE_THREADS`).
         (Default: None)
-      **kwargs: Arguments to `kfac_opt.KfacOptimizer` class.
+      **kwargs: Arguments to `KfacOptimizer` class.
     """
     self.next_op = None
     self._coord = None

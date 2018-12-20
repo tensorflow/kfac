@@ -53,12 +53,15 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                **kwargs):
     """Initializes PeriodicInvCovUpdateKfacOptimizer.
 
+    See the docstring for `KfacOptimizer` class (in optimizer.py) for
+    complete list of arguments (there are many!).
+
     Args:
       invert_every: int, The inversion ops are run once every `invert_every`
         calls to optimizer.minimize, (Default: 10)
       cov_update_every: int, The covariance update ops are run once every
         `covariance_update_every` calls to optimizer.minimize. (Default: 1)
-      **kwargs: Arguments to `tensorflow_kfac.KfacOptimizer` class.
+      **kwargs: Arguments to `KfacOptimizer` class.
     """
     self._invert_every = invert_every
     self._cov_update_every = cov_update_every

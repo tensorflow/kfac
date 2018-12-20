@@ -642,7 +642,8 @@ class AccumulatorVariable(object):
             initializer=tf.zeros_initializer(),
             shape=acc_var_shape,
             dtype=acc_var_dtype,
-            trainable=False)
+            trainable=False,
+            use_resource=True)
       else:
         self._var = var
 
@@ -651,7 +652,8 @@ class AccumulatorVariable(object):
           initializer=tf.zeros_initializer(),
           shape=var.shape if var is not None else acc_var_shape,
           dtype=var.dtype if var is not None else acc_var_dtype,
-          trainable=False)
+          trainable=False,
+          use_resource=True)
 
       # GPU doesn't support int32 var so we allow TF to allocate this op
       # automatically.
@@ -661,7 +663,8 @@ class AccumulatorVariable(object):
             dtype=tf.int32,
             name=name+"acc_counter",
             initializer=tf.zeros_initializer(),
-            trainable=False)
+            trainable=False,
+            use_resource=True)
 
   def accumulate(self,
                  value,
@@ -719,10 +722,14 @@ class AccumulatorVariable(object):
                                num_steps_for_update):
     """Assigns average accumulate value to self._var."""
     def _assign():
+      """No docstring needed, pylint."""
       avg_acc_val = (1. / num_steps_for_update) * self._acc_var
       ema_decay_tensor = tf.convert_to_tensor(ema_decay)
 
       def _assign_moving_average():
+        # These moving averages use "slots" internally, which aren't implemented
+        # with resource variables. Thus I don't trust them.
+        # TODO(b/121265708): Someone should look into this!
         return tf.group(
             moving_averages.assign_moving_average(
                 self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))

@@ -50,11 +50,11 @@ flags.DEFINE_integer('cov_update_period', 1,
 flags.DEFINE_integer('damping_adaptation_interval', 5,
                      '# of steps between updating the damping parameter.')
 
-flags.DEFINE_float('learning_rate', 1e-2,
-                   'Learning rate to use when use_lrmu_adaptation=False.')
-flags.DEFINE_float('momentum', 0.95,
+flags.DEFINE_float('learning_rate', 5e-3,
+                   'Learning rate to use when adaptation="off".')
+flags.DEFINE_float('momentum', 0.9,
                    'Momentum decay value to use when '
-                   'use_lrmu_adaptation=False.')
+                   'lrmu_adaptation="off" or "only_lr".')
 
 flags.DEFINE_float('weight_decay', 1e-5,
                    'L2 regularization applied to weight matrices.')
@@ -68,11 +68,15 @@ flags.DEFINE_integer('batch_size', 1024,
                      'The size of the mini-batches to use if not using the '
                      'schedule.')
 
-flags.DEFINE_boolean('use_lrmu_adaptation', True,
-                     'If True then we use the quadratic model based learning-'
-                     'rate and momentum adaptation method from the original '
-                     'paper. Note that this only works well when '
-                     'use_batch_size_schedule=True')
+flags.DEFINE_string('lrmu_adaptation', 'on',
+                    'If set to "on" then we use the quadratic model '
+                    'based learning-rate and momentum adaptation method from '
+                    'the original paper. Note that this only works well in '
+                    'practice when use_batch_size_schedule=True. Can also '
+                    'be set to "off" and "only_lr", which turns '
+                    'it off, or uses a version where the momentum parameter '
+                    'is fixed (resp.).')
+
 
 flags.DEFINE_boolean('use_alt_data_reader', True,
                      'If True we use the alternative data reader for MNIST '
@@ -111,16 +115,19 @@ def make_train_op(batch_size,
   if layer_collection is None:
     raise ValueError('layer_collection must be defined to use K-FAC.')
 
-  if FLAGS.use_lrmu_adaptation:
+  if FLAGS.lrmu_adaptation == 'on':
     learning_rate = 1.0
     momentum = None
     momentum_type = 'qmodel'
-    # momentum_type = 'qmodel_fixedmu'
-  else:
-    # Temporary test values.
+  elif FLAGS.lrmu_adaptation == 'only_lr':
+    learning_rate = 1.0
+    momentum = FLAGS.momentum
+    momentum_type = 'qmodel_fixedmu'
+  elif FLAGS.lrmu_adaptation == 'off':
     learning_rate = FLAGS.learning_rate
     momentum = FLAGS.momentum
     momentum_type = 'regular'
+    # momentum_type = 'adam'
 
   optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=FLAGS.inverse_update_period,

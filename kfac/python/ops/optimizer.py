@@ -25,7 +25,18 @@ from kfac.python.ops import curvature_matrix_vector_products as cmvp
 from kfac.python.ops import estimator as est
 
 
-_INCLUDE_DAMPING_IN_QMODEL_CHANGE = True  # I'm not sure about this
+# If True we the damping contribution is included in the quadratic model for
+# the purposes of computing qmodel_change in rho (the reduction ratio used in
+# the LM damping adjustment method).
+_INCLUDE_DAMPING_IN_QMODEL_CHANGE = False
+
+
+def set_global_constants(include_damping_in_qmodel_change=None):
+  """Sets various global constants used by the classes in this module."""
+  global _INCLUDE_DAMPING_IN_QMODEL_CHANGE
+
+  if include_damping_in_qmodel_change is not None:
+    _INCLUDE_DAMPING_IN_QMODEL_CHANGE = include_damping_in_qmodel_change
 
 
 class KfacOptimizer(tf.train.GradientDescentOptimizer):
@@ -63,9 +74,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
     Args:
       learning_rate: The base learning rate for the optimizer.  Should probably
-          be set to 1.0 when using momentum_type = 'qmodel', but can still be
-          set lowered if desired (effectively lowering the trust in the
-          quadratic model.)
+          be set to 1.0 when using momentum_type = 'qmodel'/'qmodel_fixedmu',
+          but can still be set to a different value if desired (effectively
+          applying the learning rate on top of whatever update the qmodel
+          approach computes).
       damping: The damping factor used to stabilize training due to errors in
           the local approximation with the Fisher information matrix, and to
           regularize the update direction by making it closer to the gradient.
@@ -77,7 +89,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           blocks, Kronecker factors, and losses associated with the
           graph.  The layer_collection cannot be modified after KfacOptimizer's
           initialization.
-      cov_ema_decay: (Optional) The decay factor used when calculating the
+      cov_ema_decay: The decay factor used when calculating the
         covariance estimate moving averages. (Default: 0.95)
       var_list: Optional list or tuple of variables to train. Defaults to
         tf.trainable_variables.
@@ -170,12 +182,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
             use_resource=True)
     else:
       self._damping = tf.convert_to_tensor(damping)
-
-    if self._momentum_type == "adam" and self._adapt_damping:
-      # This doesn't work due to the way previous updates are retrieved using
-      # the stored velocity. It's pure and simple engineering to fix it.
-      raise ValueError("'adam' type momentum not currently supported with "
-                       "adaptive damping.")
 
     self._is_chief = is_chief
     self._prev_train_batch = prev_train_batch
@@ -372,9 +378,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         # where we compute qmodel_change.  However, it should happen before
         # anything else does, so it's as if we computed it on the previous
         # iteration.  The only reason we do it this way is way and not on the
-        # actual iteration is due to weirdness related to parameter servers.
-        # Essentially the model variables won't be updated and so we can't
-        # properly compute prev_batch_loss until the next sess.run() call.
+        # actual iteration is due to weirdness related to parameter servers
+        # or possibly just non-resource variables. Essentially the model
+        # variables won't be updated and so we can't properly compute
+        # prev_batch_loss until the next sess.run() call.
         maybe_update_damping = tf.cond(
             tf.equal(tf.mod(global_step - 1, self._damping_adaptation_interval),
                      0),
@@ -404,12 +411,13 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # iterated over more than once.
     grads_and_vars = list(grads_and_vars)
 
-    # Compute step.
-    steps_and_vars = self._compute_update_steps(
+    # Compute raw update step (self._learning_rate not yet applied).
+    raw_updates_and_vars = self._compute_raw_update_steps(
         grads_and_vars, global_step=kwargs.get("global_step", None))
 
-    # Update trainable variables with this step.
-    return super(KfacOptimizer, self).apply_gradients(steps_and_vars, *args,
+    # Update trainable variables with this step, applying self._learning_rate).
+    return super(KfacOptimizer, self).apply_gradients(raw_updates_and_vars,
+                                                      *args,
                                                       **kwargs)
 
   def _squared_fisher_norm(self, grads_and_vars, precon_grads_and_vars):
@@ -502,7 +510,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # Also, what guarantee do we have that this is the old value and not the
     # new value?  Remember that control flow doesn't work in TF whenever
     # non-resource variables are involved.
-    # TODO(insertbug): Figure out if this is a problem and if not explain why
+    # TODO(b/121245468): Figure out if this is a problem and if not explain why
     # Or fix it by somehow forcing the slots to use resource variables instead.
     return list(
         (-1. * self._learning_rate
@@ -773,60 +781,108 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     linear_term = _ip_p(updates_and_vars, grads_and_vars)
     return quad_term + linear_term
 
-  def _compute_update_steps(self, grads_and_vars, global_step=None):
-    """Computes the update steps for the variables given the gradients.
+  def _maybe_update_qmodel_change(self, qmodel_change_thunk, global_step):
+    """Returns an op which updates the qmodel_change variable if it is time to.
+
+    Args:
+      qmodel_change_thunk: A callable which when evaluated returns the qmodel
+        change.
+      global_step: The usual global step counter passed into minimize.
+
+    Returns:
+      An op.
+    """
+    def update_qmodel_change():
+      # The tf.group is needed to strip away the value so it can be used
+      # in the cond later.
+      return tf.group(
+          tf.assign(self._qmodel_change, tf.squeeze(qmodel_change_thunk())))
+
+    # Note that we compute the qmodel change and store it in a variable so
+    # it can be used at the next sess.run call (where rho will actually be
+    # computed).
+    return tf.cond(
+        tf.equal(tf.mod(global_step, self._damping_adaptation_interval), 0),
+        update_qmodel_change, tf.no_op)
+
+  def _compute_raw_update_steps(self, grads_and_vars, global_step=None):
+    """Computes the raw update steps for the variables given the gradients.
+
+    Note that these "raw updates" are further multiplied by
+    -1*self._learning_rate when the update is eventually applied in the
+    superclass (which is GradientDescentOptimizer).
 
     Args:
       grads_and_vars: List of (gradient, variable) pairs.
       global_step: The usual global step counter passed into minimize.
 
     Returns:
-      A list of tuple (assign_op ,var) where `assign_op` assigns the update
-      steps to `var`.
+      A list of tuples (raw_update, var) where raw_update is the update to
+      the parameter. These updates must be actually used since they carry
+      with them certain control dependencies that need to happen.
     """
 
     if self._momentum_type == "regular":
       # Compute "preconditioned" gradient.
-      precon_grads_and_vars = self._fisher_est.multiply_inverse(grads_and_vars)
+      precon_grads_and_vars = self._fisher_est.multiply_inverse(
+          grads_and_vars)
 
       # Apply "KL clipping" if asked for.
       if self._norm_constraint is not None:
         precon_grads_and_vars = self._clip_updates(grads_and_vars,
                                                    precon_grads_and_vars)
 
+      # Update the velocities and get their values as the "raw" updates
+      raw_updates_and_vars = self._update_velocities(precon_grads_and_vars,
+                                                     self._momentum)
+
       if self._adapt_damping and self._is_chief:
-        velocities_and_vars = self._update_velocities(precon_grads_and_vars,
-                                                      self._momentum)
-        updates_and_vars = _sprod_p(-1. * self._learning_rate,
-                                    velocities_and_vars)
 
-        def update_qmodel_change():
-          qmodel_change = self._compute_approx_qmodel_change(updates_and_vars,
-                                                             grads_and_vars)
-          # The group is needed to strip away the value so it can be used
-          # in the cond later.
-          return tf.group(
-              tf.assign(self._qmodel_change, tf.squeeze(qmodel_change)))
+        def compute_qmodel_change():
+          updates_and_vars = _sprod_p(-1. * self._learning_rate,
+                                      raw_updates_and_vars)
+          return self._compute_approx_qmodel_change(updates_and_vars,
+                                                    grads_and_vars)
 
-        maybe_update_qmodel_change = tf.cond(
-            tf.equal(tf.mod(global_step, self._damping_adaptation_interval), 0),
-            update_qmodel_change, tf.no_op)
+        maybe_update_qmodel_change = self._maybe_update_qmodel_change(
+            compute_qmodel_change,
+            global_step)
 
-        # We need this control dep because qmodel_change depends on the value
-        # of the previous velocities
         with tf.control_dependencies([maybe_update_qmodel_change]):
-          # Update the velocity with this and return it as the step.
-          return self._update_velocities(precon_grads_and_vars, self._momentum)
+          # Making this a tuple is important so that it actually gets evaluated
+          # in the context.
+          return tuple((tf.identity(vec), var)
+                       for (vec, var) in raw_updates_and_vars)
       else:
-        # Update the velocity with this and return it as the step.
-        return self._update_velocities(precon_grads_and_vars, self._momentum)
+        return raw_updates_and_vars
 
     elif self._momentum_type == "adam":
-      # Update velocity.
       velocities_and_vars = self._update_velocities(grads_and_vars,
                                                     self._momentum)
-      # Return "preconditioned" velocity vector as the step.
-      return self._fisher_est.multiply_inverse(velocities_and_vars)
+      # The "preconditioned" velocity vector is the raw update step.
+      raw_updates_and_vars = self._fisher_est.multiply_inverse(
+          velocities_and_vars)
+
+      if self._adapt_damping and self._is_chief:
+        def compute_qmodel_change():
+          # This is a special formula that exploits the structure of the
+          # particular update we are using.
+          return (0.5 * (self._learning_rate**2) *
+                  _ip_p(raw_updates_and_vars, velocities_and_vars) -
+                  self._learning_rate * _ip_p(raw_updates_and_vars,
+                                              grads_and_vars))
+
+        maybe_update_qmodel_change = self._maybe_update_qmodel_change(
+            compute_qmodel_change,
+            global_step)
+
+        with tf.control_dependencies([maybe_update_qmodel_change]):
+          # Making this a tuple is important so that it actually gets evaluated
+          # in the context.
+          return tuple((tf.identity(vec), var)
+                       for (vec, var) in raw_updates_and_vars)
+      else:
+        return raw_updates_and_vars
 
     elif (self._momentum_type == "qmodel"
           or self._momentum_type == "qmodel_fixedmu"):
