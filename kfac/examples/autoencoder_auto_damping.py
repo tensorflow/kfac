@@ -82,6 +82,9 @@ flags.DEFINE_boolean('use_alt_data_reader', True,
                      'If True we use the alternative data reader for MNIST '
                      'that is faster for small datasets.')
 
+flags.DEFINE_string('device', '/gpu:0',
+                    'The device to run the major ops on.')
+
 
 FLAGS = flags.FLAGS
 
@@ -134,12 +137,16 @@ def make_train_op(batch_size,
       cov_update_every=FLAGS.cov_update_period,
       learning_rate=learning_rate,
       damping=150.,  # When using damping adaptation it is advisable to start
-                     # with a high value
+                     # with a high value. This value is probably far too high
+                     # to use for most neural nets if you aren't using damping
+                     # adaptation. (Although it always depends on the scale of
+                     # the loss.)
       cov_ema_decay=0.95,
       momentum=momentum,
       momentum_type=momentum_type,
       layer_collection=layer_collection,
       batch_size=batch_size,
+      num_burnin_steps=5,
       adapt_damping=True,
       is_chief=True,
       prev_train_batch=cached_reader.cached_batch,
@@ -288,20 +295,31 @@ def main(_):
   batch_loss, batch_error = loss_fn(minibatch,
                                     layer_collection=layer_collection,
                                     return_acc=True)
+
   # Make training op
-  train_op, opt = make_train_op(
-      batch_size,
-      batch_loss,
-      layer_collection,
-      loss_fn=loss_fn,
-      cached_reader=cached_reader)
+  with tf.device(FLAGS.device):
+    train_op, opt = make_train_op(
+        batch_size,
+        batch_loss,
+        layer_collection,
+        loss_fn=loss_fn,
+        cached_reader=cached_reader)
 
   learning_rate = opt.learning_rate
   momentum = opt.momentum
-
-  # Fit model.
+  damping = opt.damping
+  rho = opt.rho
+  qmodel_change = opt.qmodel_change
   global_step = tf.train.get_or_create_global_step()
-  with tf.train.MonitoredTrainingSession(save_checkpoint_secs=30) as sess:
+
+  # Without setting allow_soft_placement=True there will be problems when
+  # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
+  # supported).
+  config = tf.ConfigProto(allow_soft_placement=True)
+
+  # Train model.
+  with tf.train.MonitoredTrainingSession(save_checkpoint_secs=30,
+                                         config=config) as sess:
     while not sess.should_stop():
       i = sess.run(global_step)
 
@@ -310,16 +328,17 @@ def main(_):
       else:
         batch_size_ = FLAGS.batch_size
 
-      _, batch_loss_, batch_error_, learning_rate_, momentum_ = sess.run(
-          [train_op, batch_loss, batch_error, learning_rate, momentum],
+      _, batch_loss_, batch_error_ = sess.run(
+          [train_op, batch_loss, batch_error],
           feed_dict={batch_size: batch_size_})
 
       # We get these things in a separate sess.run() call because they are
       # stored as variables in the optimizer. (So there is no computational cost
       # to getting them, and if we don't get them after the previous call is
       # over they might not be updated.)
-      damping_, rho_, qmodel_change_ = sess.run(
-          [opt.damping, opt.rho, opt.qmodel_change])
+      (learning_rate_, momentum_, damping_, rho_,
+       qmodel_change_) = sess.run([learning_rate, momentum, damping, rho,
+                                   qmodel_change])
 
       # Print training stats.
       tf.logging.info(

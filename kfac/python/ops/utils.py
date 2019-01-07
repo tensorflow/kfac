@@ -618,8 +618,8 @@ class AccumulatorVariable(object):
     read by invoking `self.accumulated_value` property.
 
     Args:
-      name: `string`, Name of the accumulator variable.
-      var: tf.Variable, A value for this variable will be assigned after
+      name: `string`. Name of the accumulator variable.
+      var: tf.Variable. A value for this variable will be assigned after
         `num_steps` times `assign()` function is invoked.
       acc_var_shape: Shape of the variable to be accumulated. Required only if
         `var` is not passed.
@@ -638,7 +638,7 @@ class AccumulatorVariable(object):
     with tf.variable_scope("acc_var", reuse=tf.AUTO_REUSE):
       if var is None:
         self._var = tf.get_variable(
-            name + "orig_var",
+            name + "_orig_var",
             initializer=tf.zeros_initializer(),
             shape=acc_var_shape,
             dtype=acc_var_dtype,
@@ -655,16 +655,13 @@ class AccumulatorVariable(object):
           trainable=False,
           use_resource=True)
 
-      # GPU doesn't support int32 var so we allow TF to allocate this op
-      # automatically.
-      with tf.device(None):
-        self._counter = tf.get_variable(
-            shape=(),
-            dtype=tf.int32,
-            name=name+"acc_counter",
-            initializer=tf.zeros_initializer(),
-            trainable=False,
-            use_resource=True)
+      self._counter = tf.get_variable(
+          shape=(),
+          dtype=tf.int32,
+          name=name+"_counter",
+          initializer=tf.zeros_initializer(),
+          trainable=False,
+          use_resource=True)
 
   def accumulate(self,
                  value,
@@ -696,8 +693,7 @@ class AccumulatorVariable(object):
     acc_op = tf.assign_add(self._acc_var, value)
 
     with tf.control_dependencies([inc_step_op]):
-      with tf.device(None):
-        should_reset = tf.equal(tf.mod(self._counter, num_steps_for_update), 0)
+      should_reset = tf.equal(tf.mod(self._counter, num_steps_for_update), 0)
 
     with tf.control_dependencies([acc_op, inc_step_op]):
       var_assign_op = tf.cond(
@@ -775,7 +771,6 @@ class PartitionedTensor(object):
                        "dimension)." % shape)
 
     self.tensors = tensors
-    self._concats = {}  # {device: Tensor}
 
   @property
   def shape(self):
@@ -813,12 +808,7 @@ class PartitionedTensor(object):
     with tf.name_scope(name, "PartitionedTensor.as_tensor", self.tensors):
       assert not as_ref
       assert dtype in [None, self.dtype]
-      result = tf.concat(self.tensors, axis=0)
-
-      # Cache 'result' if we haven't already cached a value for this device.
-      if result.device not in self._concats:
-        self._concats[result.device] = result
-      return self._concats[result.device]
+      return tf.concat(self.tensors, axis=0)
 
   @property
   def device(self):

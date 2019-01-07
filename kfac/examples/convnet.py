@@ -303,6 +303,7 @@ def minimize_loss_single_machine(loss,
       placement_strategy="round_robin",
       cov_devices=device_list,
       inv_devices=device_list,
+      trans_devices=device_list,
       momentum=0.9)
 
   with tf.device(device):
@@ -359,6 +360,7 @@ def minimize_loss_single_machine_manual(loss,
       placement_strategy="round_robin",
       cov_devices=device_list,
       inv_devices=device_list,
+      trans_devices=device_list,
       momentum=0.9)
   (cov_update_thunks,
    inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()
@@ -517,12 +519,18 @@ def distributed_grads_only_and_ops_chief_worker(
   else:
     train_op = sync_optimizer.minimize(loss, global_step=global_step)
 
+  # Without setting allow_soft_placement=True there will be problems when
+  # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
+  # supported).
+  config = tf.ConfigProto(allow_soft_placement=True)
+
   with tf.train.MonitoredTrainingSession(
       master=master,
       is_chief=is_chief,
       checkpoint_dir=checkpoint_dir,
       hooks=hooks,
-      stop_grace_period_secs=0) as sess:
+      stop_grace_period_secs=0,
+      config=config) as sess:
     while not sess.should_stop():
       global_step_, loss_, accuracy_, _ = sess.run(
           [global_step, loss, accuracy, train_op])
@@ -571,12 +579,19 @@ def distributed_grads_and_ops_dedicated_workers(
   tf.logging.info("Starting training.")
   is_chief = (task_id == 0)
   hooks = [sync_optimizer.make_session_run_hook(is_chief)]
+
+  # Without setting allow_soft_placement=True there will be problems when
+  # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
+  # supported).
+  config = tf.ConfigProto(allow_soft_placement=True)
+
   with tf.train.MonitoredTrainingSession(
       master=master,
       is_chief=is_chief,
       checkpoint_dir=checkpoint_dir,
       hooks=hooks,
-      stop_grace_period_secs=0) as sess:
+      stop_grace_period_secs=0,
+      config=config) as sess:
     while not sess.should_stop():
       # Choose which op this task is responsible for running.
       if _is_gradient_task(task_id, num_worker_tasks):
@@ -635,18 +650,22 @@ def train_mnist_single_machine(data_dir,
   if not _USE_MANUAL_REG:
     layer_collection.auto_register_layers()
 
+  # Without setting allow_soft_placement=True there will be problems when
+  # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
+  # supported).
+  config = tf.ConfigProto(allow_soft_placement=True)
+
   # Fit model.
   if manual_op_exec:
     return minimize_loss_single_machine_manual(
-        loss, accuracy, layer_collection, device=device)
+        loss, accuracy, layer_collection, device=device, session_config=config)
   else:
     return minimize_loss_single_machine(
-        loss, accuracy, layer_collection, device=device)
+        loss, accuracy, layer_collection, device=device, session_config=config)
 
 
 def train_mnist_multitower(data_dir, num_epochs, num_towers,
-                           devices, use_fake_data=False,
-                           session_config=None):
+                           devices, use_fake_data=False, session_config=None):
   """Train a ConvNet on MNIST.
 
   Training data is split equally among the towers. Each tower computes loss on
@@ -720,9 +739,17 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
       placement_strategy="round_robin",
       cov_devices=devices,
       inv_devices=devices,
+      trans_devices=devices,
       momentum=0.9)
 
-  train_op = optimizer.minimize(loss, global_step=g_step)
+  with tf.device(devices[0]):
+    train_op = optimizer.minimize(loss, global_step=g_step)
+
+  # Without setting allow_soft_placement=True there will be problems when
+  # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
+  # supported).
+  if not session_config:
+    session_config = tf.ConfigProto(allow_soft_placement=True)
 
   tf.logging.info("Starting training.")
   with tf.train.MonitoredTrainingSession(config=session_config) as sess:
@@ -839,7 +866,7 @@ def train_mnist_estimator(data_dir, num_epochs, use_fake_data=False):
     del params
 
     if mode != tf.estimator.ModeKeys.TRAIN:
-      raise ValueError("Only training is supposed with this API.")
+      raise ValueError("Only training is supported with this API.")
 
     # Build a ConvNet.
     layer_collection = kfac.LayerCollection()

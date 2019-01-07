@@ -42,8 +42,10 @@ class VariableBatchReader(object):
     """Initializes class.
 
     Args:
-      dataset: List of Tensors.
-      num_examples: The number of examples in the data set.
+      dataset: List of Tensors. These must remain constant across session.run
+        calls, unlike the version of VariableBatchReader in data_reader.py.
+      num_examples: The number of examples in the data set (i.e. dimension 0
+        of the elements of `dataset`).
     """
     self._dataset = dataset
     self._num_examples = num_examples
@@ -78,8 +80,10 @@ class CachedDataReader(VariableBatchReader):
     """Initializes class and creates variables for storing previous batch.
 
     Args:
-      dataset: List of Tensors.
-      num_examples: `int`. Number of examples in the mini-batch.
+      dataset: List of Tensors. These must remain constant across session.run
+        calls, unlike the version of VariableBatchReader in data_reader.py.
+      num_examples: The number of examples in the data set (i.e. dimension 0
+        of the elements of `dataset`).
     """
     super(CachedDataReader, self).__init__(dataset, num_examples)
 

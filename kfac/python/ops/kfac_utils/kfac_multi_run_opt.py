@@ -30,51 +30,67 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
   """Accumulates data across multiple sessions and applies updates periodically.
 
   The class provides functionality to process large minibatch for training. The
-  statistics and gradients for the large batch are collected over multiple
-  optimizer.minimize runs and applied periodically.
+  parameter gradients, and the second order statistics (aka 'cov' statistics)
+  needed to compute the preconditioner, are collected over multiple executions
+  (steps) of the training op (returned by optimizer.minimize). Periodically,
+  these accumulated statistics and gradients are then used to actually update
+  the preconditioner, and apply an update to the parameters.
 
-  More specifically, this class aggregates covariance statistics over
-  `num_steps_per_cov_update` runs. The aggregated covariance estimate is then
-  assigned to KFAC covariance variable. Also the gradients are accumulated over
-  `num_steps_per_update` runs and then applied. The inverses will be computed
-  every `invert_every` steps. Ideally set the `invert_every` to a multiple of
-  `num_steps_per_cov_update` so that the inverses are computed after the
-  covariance is updated. The higher the multiple more the delay in using the
-  computed covariance estimates in the KFAC update step.
+  The best way to think about it is that the only the executions that update
+  the parameters are the real ``iterations".  All other executions are just
+  doing the prep-work for those iterations.
+
+  In more detail, each execution of the training op (returned by minimize) will
+  only accumulate gradient information and cov information from the current
+  mini-batch, and not actually apply any of this to the params or cov variables.
+  This is except for the k-th, 2k-th, 3k-th etc execution of the
+  training op, where k = `num_steps_per_update`.
+
+  Inversion ops are executed periodically every j-th update to the parameters /
+  cov variables, where j = `invert_every`. So this means that they will execute
+  on the jk-th, 2jk-th, 3jk-th, etc execution of the training op.
   """
 
   def __init__(self,
+               num_steps_per_update=1,
                invert_every=10,
                **kwargs):
     """Initializes KfacMultiRunOpt.
 
     See the docstring for `KfacOptimizer` class (in optimizer.py) for
-    complete list of arguments (there are many!).
+    complete list of arguments (there are many!).  Note that the argument
+    `num_steps_per_cov_update` will be overridden by the value of
+    `num_steps_per_update`.
 
     Args:
-      invert_every: int, The inversion ops are run once every `invert_every`
-        calls to optimizer.minimize, (Default: 10)
+      num_steps_per_update: int. The number of steps per update of the second
+        order statistics and parameters. (Default: 1)
+      invert_every: int. The frequency (as measured by the number of parameter
+        updates -- not the number of training op executions) at which the
+        inversion ops executed. (Default: 10)
       **kwargs: Arguments to `KfacOptimizer` class.
     """
+    self._num_steps_per_update = num_steps_per_update
     self._invert_every = invert_every
+
+    kwargs["num_steps_per_cov_update"] = self._num_steps_per_update
     super(KfacMultiRunOpt, self).__init__(**kwargs)
 
-  def compute_gradients(self,
-                        loss,
-                        var_list=None,
-                        gate_gradients=tf.train.Optimizer.GATE_OP,
-                        aggregation_method=None,
-                        colocate_gradients_with_ops=True,
-                        grad_loss=None):
-    return super(KfacMultiRunOpt, self).compute_gradients(
-        loss=loss,
-        var_list=var_list,
-        gate_gradients=gate_gradients,
-        aggregation_method=aggregation_method,
-        colocate_gradients_with_ops=colocate_gradients_with_ops,
-        grad_loss=grad_loss)
+    with tf.variable_scope(self.get_name()):
+      self._inner_counter = tf.get_variable(
+          "inner_counter", dtype=tf.int64, shape=(), trainable=False,
+          initializer=tf.zeros_initializer, use_resource=True)
+
+    if self._adapt_damping:
+      raise ValueError("Adapting damping currently not supported with "
+                       "KfacMultiRunOpt.")
+
+  @property
+  def inner_counter(self):
+    return tf.identity(self._inner_counter)
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
+
     cov_update_thunks, inv_update_thunks = self.make_vars_and_create_op_thunks()
 
     # Create Accumulator variables for adding gradients over multiple sess.run.
@@ -86,35 +102,25 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
         for i, (grads, _) in enumerate(grads_and_vars)
     ]
 
-    counter = self.counter
-    prev_counter = tf.assign(
-        tf.get_variable(
-            "prev_counter",
-            shape=(),
-            dtype=tf.int64,
-            initializer=tf.zeros_initializer,
-            trainable=False,
-            use_resource=True), counter)
-    with tf.control_dependencies([prev_counter]):
-      update_counter = tf.assign_add(counter, 1, name="update_counter")
+    should_update = tf.equal(tf.mod(self.inner_counter + 1,
+                                    self._num_steps_per_update),
+                             0)
 
-    # Covarainces are computed every run and stored in accumuator variables.
-    cov_updates = tf.group([thunk() for thunk in cov_update_thunks])
-    with tf.control_dependencies([cov_updates, update_counter]):
-      # GPU doesn't support mod so we allow TF to allocate this op
-      # automatically.
-      with tf.device(None):
-        should_do_inv_updates = tf.logical_and(
-            prev_counter > 0,
-            tf.equal(tf.mod(prev_counter, self._invert_every), 0))
+    # Covariances are computed every run and stored in accumuator variables.
+    cov_updates = tf.group(*(thunk() for thunk in cov_update_thunks))
+
+    with tf.control_dependencies([cov_updates]):
+
+      should_do_inv_updates = tf.logical_and(
+          should_update,
+          tf.equal(tf.mod(self.counter, self._invert_every), 0))
+
       maybe_inv_updates = tf.cond(
           should_do_inv_updates,
-          lambda: tf.group([thunk() for thunk in inv_update_thunks]), tf.no_op)
+          lambda: tf.group(*(thunk() for thunk in inv_update_thunks)),
+          tf.no_op)
+
       with tf.control_dependencies([maybe_inv_updates]):
-        with tf.device(None):
-          maybe_apply_grads = tf.logical_and(
-              prev_counter > 0,
-              tf.equal(tf.mod(prev_counter, self._num_steps_per_cov_update), 0))
 
         def apply_grads():
           acc_vars = [var for _, var in grads_and_vars]
@@ -127,27 +133,16 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
               global_step=global_step,
               name=name)
 
-        def update_acc_grads():
-          grads_list = [grads for grads, _ in grads_and_vars]
-          return [
-              acc_grad.accumulate(
-                  grad, num_steps_for_update=self._num_steps_per_cov_update)
-              for acc_grad, grad in zip(self._acc_grads, grads_list)
-          ]
+        grads_list = [grads for grads, _ in grads_and_vars]
+        update_acc_grads = [
+            acc_grad.accumulate(
+                grad, num_steps_for_update=self._num_steps_per_update)
+            for acc_grad, grad in zip(self._acc_grads, grads_list)
+        ]
 
-        with tf.control_dependencies(update_acc_grads()):
-          return tf.cond(maybe_apply_grads, apply_grads, tf.no_op)
+        with tf.control_dependencies(update_acc_grads):
 
-  @property
-  def counter(self):
-    if not hasattr(self, "_counter"):
-      with tf.variable_scope("periodic_counter", reuse=tf.AUTO_REUSE):
-        self._counter = tf.get_variable(
-            "counter",
-            shape=(),
-            dtype=tf.int64,
-            initializer=tf.zeros_initializer,
-            trainable=False,
-            use_resource=True)
+          maybe_apply_grads = tf.cond(should_update, apply_grads, tf.no_op)
 
-    return self._counter
+          with tf.control_dependencies([maybe_apply_grads]):
+            return self._inner_counter.assign(self._inner_counter + 1)

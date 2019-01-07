@@ -39,7 +39,10 @@ class VariableBatchReader(object):
 
     Args:
       dataset: List of Tensors representing the dataset, shuffled, repeated,
-        and batched into mini-batches of size at least `max_batch_size`.
+        and batched into mini-batches of size at least `max_batch_size`.  In
+        other words it should be reshuffled at each session.run call.  This can
+        be done with the tf.data package using the construction demonstrated in
+        load_mnist() function in examples/autoencoder_auto_damping.py.
       max_batch_size: `int`. Maximum batch size of the data that can be
         retrieved from the data set.
     """
@@ -74,7 +77,10 @@ class CachedDataReader(VariableBatchReader):
 
     Args:
       dataset: List of Tensors representing the dataset, shuffled, repeated,
-        and batched into mini-batches of size at least `max_batch_size`.
+        and batched into mini-batches of size at least `max_batch_size`.  In
+        other words it should be reshuffled at each session.run call.  This can
+        be done with the tf.data package using the construction demonstrated in
+        load_mnist() function in examples/autoencoder_auto_damping.py.
       max_batch_size: `int`. Maximum batch size of the data that can be
         retrieved from the data set.
     """

@@ -510,9 +510,7 @@ class FisherFactor(object):
         estimates. Optional (Default: 1)
 
     Returns:
-      If `accumulate_cov` is `True` then returns an Op for updating the
-      covariance variable referenced by _cov. Otherwise returns the newly
-      computed cov.
+      The op which updates the cov variable (via acc_cov).
     """
     new_cov = self._compute_total_new_cov()
     return self._acc_cov.accumulate(

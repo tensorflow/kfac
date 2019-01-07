@@ -150,7 +150,8 @@ class ConvNetTest(tf.test.TestCase):
     # TensorFlow makes a "virtual CPU" using multi-threading. Thankfully, this
     # shouldn't be needed if your machine actually has all devices that you
     # ask for.
-    session_config = tf.ConfigProto(device_count={"CPU": 2})
+    session_config = tf.ConfigProto(device_count={"CPU": 2},
+                                    allow_soft_placement=True)
 
     with tf.Graph().as_default():
       # Ensure model training doesn't crash.

@@ -49,9 +49,10 @@ class KfacMultiRunOptTest(tf.test.TestCase):
     layers = layer_collection.LayerCollection()
     _construct_layer_collection(layers, logits)
 
+    num_steps_per_update = 5
     optimizer = kfac_multi_run_opt.KfacMultiRunOpt(
         invert_every=10,
-        num_steps_per_cov_update=5,
+        num_steps_per_update=num_steps_per_update,
         learning_rate=1e-4,
         cov_ema_decay=0.95,
         damping=1e+2,
@@ -60,16 +61,26 @@ class KfacMultiRunOptTest(tf.test.TestCase):
         placement_strategy="round_robin")
 
     train_step = optimizer.minimize(loss)
+    inner_counter = optimizer.inner_counter
     counter = optimizer.counter
-    max_iterations = 100
+    num_inner_steps = num_steps_per_update
+    num_outer_steps = 100
 
     init_op = tf.global_variables_initializer()
     with self.test_session() as sess:
       sess.run(init_op)
-      for iteration in range(max_iterations):
-        sess.run([loss, train_step])
-        counter_ = sess.run(counter)
-        self.assertEqual(counter_, iteration + 1.0)
+
+      for outer_step in range(num_outer_steps):
+        for inner_step in range(num_inner_steps):
+
+          counter_ = sess.run(counter)
+          inner_counter_ = sess.run(inner_counter)
+
+          self.assertEqual(counter_, outer_step)
+          self.assertEqual(inner_counter_,
+                           inner_step + outer_step*num_inner_steps)
+
+          sess.run([loss, train_step])
 
 
 if __name__ == "__main__":

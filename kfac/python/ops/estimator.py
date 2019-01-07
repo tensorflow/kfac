@@ -176,6 +176,8 @@ class FisherEstimator(object):
 
     self._name = name
 
+    self._finalized = False
+
   @property
   def variables(self):
     if callable(self._variables):
@@ -213,46 +215,30 @@ class FisherEstimator(object):
     return self._mat_type_table[self._estimation_mode]
 
   @abc.abstractmethod
-  def make_vars_and_create_op_thunks(self, scope=None):
-    """Make vars and create op thunks with a specific placement strategy.
+  def _place_and_compute_tranformation_thunks(self, thunks):
+    """Computes transformation thunks with device placement.
 
-    For each factor, all of that factor's cov variables and their associated
-    update ops will be placed on a particular device.  A new device is chosen
-    for each factor by cycling through list of devices in the cov_devices
-    argument. If cov_devices is None then no explicit device placement occurs.
-
-    An analogous strategy is followed for inverse update ops, with the list of
-    devices being given by the inv_devices argument.
-
-    Inverse variables on the other hand are not placed on any specific device
-    (they will just use the current the device placement context, whatever
-    that happens to be).  The idea is that the inverse variable belong where
-    they will be accessed most often, which is the device that actually applies
-    the preconditioner to the gradient. The user will be responsible for setting
-    the device context for this.
+    Device placement will be determined by the strategy asked for when this
+    estimator was constructed.
 
     Args:
-      scope: A string or None.  If None it will be set to the name of this
-        estimator (given by the name property). All variables will be created,
-        and all thunks will execute, inside of a variable scope of the given
-        name. (Default: None)
+      thunks: A list of thunks to run. Must be in one to one correspondence
+        with the `blocks` property.
 
     Returns:
-      cov_update_thunks: List of cov update thunks. Corresponds one-to-one with
-        the list of factors given by the "factors" property.
-      inv_update_thunks: List of inv update thunks. Corresponds one-to-one with
-        the list of factors given by the "factors" property.
+      A list (in the same order) of the the return results of the thunks,
+      with possible device placement applied.
     """
     pass
 
-  def _apply_transformation(self, vecs_and_vars, transform):
-    """Applies an block-wise transformation to the corresponding vectors.
+  def _compute_transformation(self, vecs_and_vars, transform):
+    """Computes a block-wise transformation of a list of vectors.
 
     Args:
       vecs_and_vars: List of (vector, variable) pairs.
-      transform: A function of the form f(fb, vec), where vec is the vector
-          to transform and fb is its corresponding block in the matrix, that
-          returns the transformed vector.
+      transform: A function of the form f(fb, vec), that
+          returns the transformed vector, where vec is the vector
+          to transform and fb is its corresponding block.
 
     Returns:
       A list of (transformed vector, var) pairs in the same order as
@@ -261,10 +247,17 @@ class FisherEstimator(object):
 
     vecs = utils.SequenceDict((var, vec) for vec, var in vecs_and_vars)
 
-    trans_vecs = utils.SequenceDict()
+    def make_thunk(fb, params):
+      return lambda: transform(fb, vecs[params])
 
-    for params, fb in self.layers.fisher_blocks.items():
-      trans_vecs[params] = transform(fb, vecs[params])
+    thunks = tuple(make_thunk(fb, params)
+                   for params, fb in self.layers.fisher_blocks.items())
+
+    results = self._place_and_compute_tranformation_thunks(thunks)
+
+    trans_vecs = utils.SequenceDict()
+    for params, result in zip(self.layers.fisher_blocks, results):
+      trans_vecs[params] = result
 
     return [(trans_vecs[var], var) for _, var in vecs_and_vars]
 
@@ -305,7 +298,7 @@ class FisherEstimator(object):
       vecs_and_vars.
     """
     fcn = lambda fb, vec: fb.multiply_matpower(vec, exp)
-    return self._apply_transformation(vecs_and_vars, fcn)
+    return self._compute_transformation(vecs_and_vars, fcn)
 
   def multiply_cholesky(self, vecs_and_vars, transpose=False):
     """Multiplies the vecs by the corresponding Cholesky factors.
@@ -321,7 +314,7 @@ class FisherEstimator(object):
     """
 
     fcn = lambda fb, vec: fb.multiply_cholesky(vec, transpose=transpose)
-    return self._apply_transformation(vecs_and_vars, fcn)
+    return self._compute_transformation(vecs_and_vars, fcn)
 
   def multiply_cholesky_inverse(self, vecs_and_vars, transpose=False):
     """Mults the vecs by the inverses of the corresponding Cholesky factors.
@@ -346,7 +339,7 @@ class FisherEstimator(object):
     """
 
     fcn = lambda fb, vec: fb.multiply_cholesky_inverse(vec, transpose=transpose)
-    return self._apply_transformation(vecs_and_vars, fcn)
+    return self._compute_transformation(vecs_and_vars, fcn)
 
   def _instantiate_factors(self):
     """Instantiates FisherFactors' variables.
@@ -378,13 +371,16 @@ class FisherEstimator(object):
       if self._compute_cholesky_inverse:
         block.register_cholesky_inverse()
 
-  def _finalize_layer_collection(self):
-    self.layers.create_subgraph()
-    self.layers.check_registration(self.variables)
-    self._instantiate_factors()
-    self._register_matrix_functions()
+  def _finalize(self):
+    if not self._finalized:
+      self.layers.create_subgraph()
+      self.layers.check_registration(self.variables)
+      self._instantiate_factors()
+      self._register_matrix_functions()
 
-  def create_ops_and_vars_thunks(self, scope=None):
+    self._finalized = True
+
+  def _create_ops_and_vars_thunks(self, scope=None):
     """Create thunks that make the ops and vars on demand.
 
     This function returns 4 lists of thunks: cov_variable_thunks,
@@ -413,7 +409,7 @@ class FisherEstimator(object):
       inv_update_thunks: A list of thunks that make the inv update ops.
     """
 
-    self._finalize_layer_collection()
+    self._finalize()
 
     scope = self.name if scope is None else scope
 
@@ -434,6 +430,72 @@ class FisherEstimator(object):
 
     return (cov_variable_thunks, cov_update_thunks,
             inv_variable_thunks, inv_update_thunks)
+
+  @abc.abstractmethod
+  def create_ops_and_vars_thunks(self, scope=None):
+    """Create thunks that make the ops and vars on demand with device placement.
+
+    This function returns 4 lists of thunks: cov_variable_thunks,
+    cov_update_thunks, inv_variable_thunks, and inv_update_thunks.
+
+    The length of each list is the number of factors and the i-th element of
+    each list corresponds to the i-th factor (given by the "factors" property).
+
+    Note that the execution of these thunks must happen in a certain
+    partial order.  The i-th element of cov_variable_thunks must execute
+    before the i-th element of cov_update_thunks (and also the i-th element
+    of inv_update_thunks).  Similarly, the i-th element of inv_variable_thunks
+    must execute before the i-th element of inv_update_thunks.
+
+    TL;DR (oversimplified): Execute the thunks according to the order that
+    they are returned.
+
+    Device placement will be determined by the strategy asked for when this
+    estimator was constructed.
+
+    Args:
+      scope: A string or None.  If None it will be set to the name of this
+        estimator (given by the name property). All thunks will execute inside
+        of a variable scope of the given name. (Default: None)
+    Returns:
+      cov_variable_thunks: A list of thunks that make the cov variables.
+      cov_update_thunks: A list of thunks that make the cov update ops.
+      inv_variable_thunks: A list of thunks that make the inv variables.
+      inv_update_thunks: A list of thunks that make the inv update ops.
+    """
+    pass
+
+  def make_vars_and_create_op_thunks(self, scope=None):
+    """Make vars and create op thunks with device placement.
+
+    Similar to create_ops_and_vars_thunks but actually makes the variables
+    instead of returning thunks that make them.
+
+    Device placement will be determined by the strategy asked for when this
+    estimator was constructed.
+
+    Args:
+      scope: A string or None.  If None it will be set to the name of this
+        estimator (given by the name property). All variables will be created,
+        and all thunks will execute, inside of a variable scope of the given
+        name. (Default: None)
+
+    Returns:
+      cov_update_thunks: List of cov update thunks. Corresponds one-to-one with
+        the list of factors given by the "factors" property.
+      inv_update_thunks: List of inv update thunks. Corresponds one-to-one with
+        the list of factors given by the "factors" property.
+    """
+    (cov_variable_thunks, cov_update_thunks, inv_variable_thunks,
+     inv_update_thunks) = self.create_ops_and_vars_thunks(scope=scope)
+
+    for thunk in cov_variable_thunks:
+      thunk()
+
+    for thunk in inv_variable_thunks:
+      thunk()
+
+    return cov_update_thunks, inv_update_thunks
 
   def get_cov_vars(self):
     """Returns all covariance variables associated with each Fisher factor.

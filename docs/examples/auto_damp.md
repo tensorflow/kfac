@@ -44,7 +44,7 @@ data.
       prev_train_batch=cached_reader.cached_batch,
       is_chief=True,
       loss_fn=loss_fn,
-      damping_adaptation_decay=0.99,
+      damping_adaptation_decay=0.95,
       damping_adaptation_interval=FLAGS.damping_adaptation_interval,
   )
   train_op = optimizer.minimize(loss, global_step=global_step)

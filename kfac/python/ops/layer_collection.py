@@ -292,7 +292,29 @@ class LayerCollection(object):
     return self._default_embedding_multi_approximation
 
   def auto_register_layers(self, var_list=None, **kwargs):
-    """Registers all layers automatically.
+    """Registers remaining unregistered layers automatically using a scanner.
+
+    Requires all function / distribution registrations to be performed
+    (manually) first.
+
+    Registrations will be performed using the default approximation mode for
+    each type, as if the scanner were calling the user-level registration
+    functions in this LayerCollection object (which it will be). These
+    defaults can be overridden using the set_default_XXX_approximation methods
+    for types of layers, or using the define_linked_parameters method for
+    specific parameters.
+
+    This function should only be called after any desired manual registrations
+    are performed. For example, if you have a layer which isn't recognized
+    properly by the scanner, or a layer which you want to register differently.
+
+    Note that this function is an experimental convenience feature which won't
+    work for every possible model architecture. Any layers/parameters that
+    whose structure is not recognized will be registered as "generic", which
+    is the worst curvature matrix approximation available in the system, and
+    should be avoided if possible.
+
+    See the docstring for register_layers in graph_search.py for more details.
 
     Args:
       var_list: A list of variables that the automatic registration should
@@ -501,10 +523,13 @@ class LayerCollection(object):
   def define_linked_parameters(self, params, approximation=None):
     """Identify a set of parameters that should be grouped together.
 
-    During automatic graph scanning, any matches containing variables that have
-    been identified as part of a linked group will be filtered out unless
-    the match parameters are exactly equal to the ones specified in the linked
-    group.
+    Also allows the approximation type string to be set for the given
+    parameter grouping.
+
+    During automatic graph scanning (as done by the auto_register_layers method)
+    any matches containing variables that have been identified as part of a
+    linked group will be filtered out unless the match parameters are exactly
+    equal to the ones specified in the linked group.
 
     Args:
       params: A variable, or a tuple or list of variables. The variables
@@ -787,6 +812,9 @@ class LayerCollection(object):
                            reuse=VARIABLE_SCOPE):
     """Register a call to tf.nn.convolution().
 
+    Unless you know what you are doing you should be using register_conv2d
+    instead.
+
     Args:
       params: Tensor or 2-tuple of Tensors corresponding to weight and bias of
         this layer. Weight matrix should have shape [..filter_spatial_size..,
@@ -964,7 +992,10 @@ class LayerCollection(object):
                        batch_size,
                        approx=None,
                        reuse=VARIABLE_SCOPE):
-    """Registers a generic layer.
+    """Registers parameters without assuming any struture.
+
+    Note that this is an approximation of last resort and should be avoided if
+    anything else will work.
 
     Args:
       params: Tensor or tuple of Tensors corresponding to the parameters.
@@ -1287,7 +1318,7 @@ class LayerCollection(object):
     """Registers a normal predictive distribution.
 
     This corresponds to a squared error loss of the form
-       coeff/(2*var) * ||target - prediction||^2
+       coeff/(2*var) * ||target - mean||^2
 
     Args:
       mean: The mean vector defining the distribution.
@@ -1335,7 +1366,7 @@ class LayerCollection(object):
     to reflect this.
 
     Args:
-      prediction: The prediction.
+      prediction: The prediction made by the network (i.e. its output).
       seed: The seed for the RNG (for debugging) (Default: None)
       targets: (OPTIONAL) The targets for the loss function.  Only required if
         one wants to use the "empirical Fisher" instead of the true Fisher

@@ -62,7 +62,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                prev_train_batch=None,
                loss_fn=None,
                min_damping=1e-8,
-               damping_adaptation_decay=0.99,  # should this be 0.95???
+               damping_adaptation_decay=0.95,
                damping_adaptation_interval=5,
                **kwargs):
     """Initializes the K-FAC optimizer with the given settings.
@@ -104,9 +104,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       name: The name for this optimizer. (Default: 'KFAC')
       estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
           'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
-          'exact', or 'exact_GGN'. (Default: 'gradients'). See the doc-string
-          for FisherEstimator for more a more detailed description of these
-          options.
+          'exact', or 'exact_GGN'. See the doc-string for FisherEstimator
+          (in estimator.py) for more a more detailed description of these
+          options. (Default: 'gradients').
       colocate_gradients_with_ops: Whether we should request gradients we
           compute in the estimator be colocated with their respective ops.
           (Default: True)
@@ -127,8 +127,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       is_chief: `Boolean`, `True` if the worker is chief. (Default: True)
       prev_train_batch: Training data used to minimize loss in the previous
         step. This will be used to evaluate loss by calling
-        `loss_fn(prev_train_batch)` when damping adaptation is used.
-        (Default: None)
+        `loss_fn(prev_train_batch)` when damping adaptation is used. Only
+        needed if using damping adaptation. (Default: None)
       loss_fn: `function` that takes as input training data tensor and returns
         a scalar loss. Only needed if using damping adaptation. (Default: None)
       min_damping: `float`, Minimum value the damping parameter
@@ -163,10 +163,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     if momentum_type == "qmodel" and momentum is not None:
       raise ValueError("Momentum must be None if using a momentum_type "
                        "'qmodel'.")
-
-    # Extra parameters of the optimizer
-    self._momentum = momentum
     self._momentum_type = momentum_type
+    self._momentum = momentum
+
     self._norm_constraint = norm_constraint
     self._batch_size = batch_size
     self._placement_strategy = placement_strategy
@@ -200,9 +199,19 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       self._prev_loss = tf.get_variable(
           "prev_loss", initializer=float("nan"), dtype=tf.float32,
           trainable=False, use_resource=True)
+      self._qmodel_learning_rate = tf.get_variable(
+          "qmodel_learning_rate", initializer=float("nan"), dtype=tf.float32,
+          trainable=False, use_resource=True)
+      self._qmodel_momentum = tf.get_variable(
+          "qmodel_momentum", initializer=float("nan"), dtype=tf.float32,
+          trainable=False, use_resource=True)
       self._qmodel_change = tf.get_variable(
           "qmodel_change", initializer=float("nan"), dtype=tf.float32,
           trainable=False, use_resource=True)
+
+      self._counter = tf.get_variable(
+          "counter", dtype=tf.int64, shape=(), trainable=False,
+          initializer=tf.zeros_initializer, use_resource=True)
 
       variables = var_list or tf.trainable_variables
 
@@ -221,52 +230,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           **kwargs)
 
     super(KfacOptimizer, self).__init__(learning_rate, name=name)
-
-  def set_damping_adaptation_params(self,
-                                    is_chief,
-                                    prev_train_batch,
-                                    loss_fn,
-                                    min_damping=1e-8,
-                                    damping_adaptation_decay=0.99,
-                                    damping_adaptation_interval=5):
-    """Sets parameters required to adapt damping during training.
-
-    When called, enables damping adaptation according to the Levenberg-Marquardt
-    style rule described in Section 6.5 of "Optimizing Neural Networks with
-    Kronecker-factored Approximate Curvature".
-
-    Note that this function creates Tensorflow variables which store a few
-    scalars and are accessed by the ops which update the damping (as part
-    of the training op returned by the minimize() method).
-
-    Args:
-      is_chief: `Boolean`, `True` if the worker is chief.
-      prev_train_batch: Training data used to minimize loss in the previous
-        step. This will be used to evaluate loss by calling
-        `loss_fn(prev_train_batch)`.
-      loss_fn: `function` that takes as input training data tensor and returns
-        a scalar loss.
-      min_damping: `float`(Optional), Minimum value the damping parameter
-        can take. This should be at least as big as the L2 regularization
-        coefficient. (Default: 1e-8)
-      damping_adaptation_decay: `float`(Optional), The `damping` parameter is
-        multiplied by the `damping_adaptation_decay` every
-        `damping_adaptation_interval` number of iterations. Default value 0.99.
-      damping_adaptation_interval: `int`(Optional), Number of steps in between
-        updating the `damping` parameter. Default value 5.
-
-    Raises:
-      ValueError: If `set_damping_adaptation_params` is already called and the
-        the `adapt_damping` is `True`.
-    """
-    if self._adapt_damping:
-      raise ValueError("Damping adaptation parameters already set.")
-
-    if self._momentum_type == "adam":
-      # This doesn't work due to the way previous updates are retrieved using
-      # the stored velocity. It's pure and simple engineering to fix it.
-      raise ValueError("'adam' type momentum not currently supported with "
-                       "adaptive damping.")
 
   def get_cov_vars(self):
     """Returns all covaraiance varaiables."""
@@ -290,7 +253,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
   @property
   def damping(self):
-    return self._damping
+    return tf.identity(self._damping)
 
   @property
   def damping_adaptation_interval(self):
@@ -299,24 +262,28 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
   @property
   def learning_rate(self):
     if self._momentum_type.startswith("qmodel"):
-      return self._qmodel_learning_rate
+      return self._learning_rate * tf.identity(self._qmodel_learning_rate)
     else:
       return tf.convert_to_tensor(self._learning_rate)
 
   @property
   def momentum(self):
     if self._momentum_type.startswith("qmodel"):
-      return self._qmodel_momentum
+      return tf.identity(self._qmodel_momentum)
     else:
       return tf.convert_to_tensor(self._momentum)
 
   @property
   def rho(self):
-    return self._rho
+    return tf.identity(self._rho)
 
   @property
   def qmodel_change(self):
-    return self._qmodel_change
+    return tf.identity(self._qmodel_change)
+
+  @property
+  def counter(self):
+    return tf.identity(self._counter)
 
   def make_vars_and_create_op_thunks(self):
     """Make vars and create op thunks.
@@ -358,34 +325,33 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     return self._fisher_est.create_ops_and_vars_thunks(scope=scope)
 
   def minimize(self, *args, **kwargs):
-    # This has the same general arguments as the standard optimizers do.
+    # This method has the same general arguments as the minimize methods in
+    # standard optimizers do.
 
-    # Should this variable scope encompass everything below?  Or will the super-
-    # class make another copy of the same name scope?
+    # Could consider moving this stuff into apply_gradients.
+
     with tf.variable_scope(self.get_name()):
       kwargs["var_list"] = kwargs.get("var_list") or self.variables
       if set(kwargs["var_list"]) != set(self.variables):
         raise ValueError("var_list doesn't match with set of Fisher-estimating "
-                         "variables.")
+                         "variables (i.e. those that were registered).")
 
       if self._adapt_damping and self._is_chief:
-        global_step = kwargs.get("global_step", None)
-        if global_step is None:
-          raise KeyError("global_step needs to be passed to optimizer.minimize "
-                         "if damping parameter is adapted.")
-
         # We update the damping on the iteration that is technically after
         # where we compute qmodel_change.  However, it should happen before
         # anything else does, so it's as if we computed it on the previous
         # iteration.  The only reason we do it this way is way and not on the
         # actual iteration is due to weirdness related to parameter servers
-        # or possibly just non-resource variables. Essentially the model
+        # or possibly just non-resource variables. Essentially, the model
         # variables won't be updated and so we can't properly compute
         # prev_batch_loss until the next sess.run() call.
+        should_update_damping = tf.equal(
+            tf.mod(self.counter - 1, self._damping_adaptation_interval), 0)
+
         maybe_update_damping = tf.cond(
-            tf.equal(tf.mod(global_step - 1, self._damping_adaptation_interval),
-                     0),
-            self._update_damping, tf.no_op)
+            should_update_damping,
+            self._update_damping,
+            tf.no_op)
 
         with tf.control_dependencies([maybe_update_damping]):
           loss = args[0]
@@ -394,6 +360,18 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           return tf.group(loss_assign_op, train_op)
       else:
         return super(KfacOptimizer, self).minimize(*args, **kwargs)
+
+  # We override this just so we can change the default value for some of the
+  # arguments.
+  def compute_gradients(self, *args, **kwargs):
+
+    # We want colocate_gradients_with_ops to be True by default
+    if ("colocate_gradients_with_ops" not in kwargs
+        or kwargs["colocate_gradients_with_ops"] is None):
+      kwargs["colocate_gradients_with_ops"] = True
+
+    return (super(tf.train.GradientDescentOptimizer, self)
+            .compute_gradients(*args, **kwargs))
 
   def apply_gradients(self, grads_and_vars, *args, **kwargs):
     """Applies gradients to variables.
@@ -404,7 +382,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       **kwargs: Additional keyword arguments for super.apply_gradients.
 
     Returns:
-      An `Operation` that applies the specified gradients.
+      An op that applies the specified gradients, and also updates the counter
+      variable.
     """
     # In Python 3, grads_and_vars can be a zip() object which can only be
     # iterated over once. By converting it to a list, we ensure that it can be
@@ -412,13 +391,14 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     grads_and_vars = list(grads_and_vars)
 
     # Compute raw update step (self._learning_rate not yet applied).
-    raw_updates_and_vars = self._compute_raw_update_steps(
-        grads_and_vars, global_step=kwargs.get("global_step", None))
+    raw_updates_and_vars = self._compute_raw_update_steps(grads_and_vars)
 
-    # Update trainable variables with this step, applying self._learning_rate).
-    return super(KfacOptimizer, self).apply_gradients(raw_updates_and_vars,
-                                                      *args,
-                                                      **kwargs)
+    # Update trainable variables with this step, applying self._learning_rate.
+    apply_op = super(KfacOptimizer, self).apply_gradients(raw_updates_and_vars,
+                                                          *args,
+                                                          **kwargs)
+    with tf.control_dependencies([apply_op]):
+      return tf.group(self._counter.assign(self._counter + 1))
 
   def _squared_fisher_norm(self, grads_and_vars, precon_grads_and_vars):
     """Computes the squared (approximate) Fisher norm of the updates.
@@ -492,7 +472,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       List of (rescaled preconditioned gradient, variable) pairs.
     """
     coeff = self._update_clip_coeff(grads_and_vars, precon_grads_and_vars)
-    return [(pgrad * coeff, var) for pgrad, var in precon_grads_and_vars]
+    return _sprod_p(coeff, precon_grads_and_vars)
 
   def _compute_prev_updates(self, variables):
     """Computes previous updates as negative velocities scaled by learning rate.
@@ -512,10 +492,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # non-resource variables are involved.
     # TODO(b/121245468): Figure out if this is a problem and if not explain why
     # Or fix it by somehow forcing the slots to use resource variables instead.
-    return list(
-        (-1. * self._learning_rate
-         * self._zeros_slot(var, "velocity", self._name))
-        for var in variables)
+
+    return _sprod(-1. * self._learning_rate,
+                  tuple(self._zeros_slot(var, "velocity", self.get_name())
+                        for var in variables))
 
   def _compute_qmodel_wrapper(self, grads_and_vars, updates_and_vars):
     """Wrapper function for `self._compute_qmodel`.
@@ -781,13 +761,12 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     linear_term = _ip_p(updates_and_vars, grads_and_vars)
     return quad_term + linear_term
 
-  def _maybe_update_qmodel_change(self, qmodel_change_thunk, global_step):
+  def _maybe_update_qmodel_change(self, qmodel_change_thunk):
     """Returns an op which updates the qmodel_change variable if it is time to.
 
     Args:
       qmodel_change_thunk: A callable which when evaluated returns the qmodel
         change.
-      global_step: The usual global step counter passed into minimize.
 
     Returns:
       An op.
@@ -802,10 +781,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # it can be used at the next sess.run call (where rho will actually be
     # computed).
     return tf.cond(
-        tf.equal(tf.mod(global_step, self._damping_adaptation_interval), 0),
+        tf.equal(tf.mod(self.counter, self._damping_adaptation_interval), 0),
         update_qmodel_change, tf.no_op)
 
-  def _compute_raw_update_steps(self, grads_and_vars, global_step=None):
+  def _compute_raw_update_steps(self, grads_and_vars):
     """Computes the raw update steps for the variables given the gradients.
 
     Note that these "raw updates" are further multiplied by
@@ -814,7 +793,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
     Args:
       grads_and_vars: List of (gradient, variable) pairs.
-      global_step: The usual global step counter passed into minimize.
 
     Returns:
       A list of tuples (raw_update, var) where raw_update is the update to
@@ -845,8 +823,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                                                     grads_and_vars)
 
         maybe_update_qmodel_change = self._maybe_update_qmodel_change(
-            compute_qmodel_change,
-            global_step)
+            compute_qmodel_change)
 
         with tf.control_dependencies([maybe_update_qmodel_change]):
           # Making this a tuple is important so that it actually gets evaluated
@@ -873,8 +850,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                                               grads_and_vars))
 
         maybe_update_qmodel_change = self._maybe_update_qmodel_change(
-            compute_qmodel_change,
-            global_step)
+            compute_qmodel_change)
 
         with tf.control_dependencies([maybe_update_qmodel_change]):
           # Making this a tuple is important so that it actually gets evaluated
@@ -899,10 +875,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       # _compute_prev_updates().
       alpha, mu, qmodel_change = self._compute_qmodel_hyperparams_wrapper(
           grads_and_vars, precon_grads_and_vars, fixed_mu=fixed_mu)
-      self._qmodel_learning_rate = -alpha
-      self._qmodel_momentum = mu
 
-      qmodel_assign_op = tf.assign(self._qmodel_change, qmodel_change)
+      qmodel_assign_op = tf.group(tf.assign(self._qmodel_change, qmodel_change),
+                                  tf.assign(self._qmodel_learning_rate, -alpha),
+                                  tf.assign(self._qmodel_momentum, mu))
 
       with tf.control_dependencies([qmodel_assign_op]):
         return self._update_velocities(
@@ -926,7 +902,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     """
 
     def _update_velocity(vec, var):
-      velocity = self._zeros_slot(var, "velocity", self._name)
+      velocity = self._zeros_slot(var, "velocity", self.get_name())
       with tf.colocate_with(velocity):
         # NOTE(mattjj): read/modify/write race condition not suitable for async.
 
@@ -945,7 +921,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     The damping parameter is updated according to the Levenberg-Marquardt rule
     every `self._damping_adaptation_interval` iterations.
 
-    Essentially the rule computes the reduction ratio "rho" and depending on
+    Essentially, the rule computes the reduction ratio "rho" and depending on
     the value either increases lambda, decreases it, or leaves it as is.
 
     The reduction ratio captures how closely the quadratic approximation to the
