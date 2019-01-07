@@ -1030,7 +1030,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
           self.in_channels)
       expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
       inv_matrix_ = sess.run(inv_matrix)
-      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_, rtol=1e-5)
 
       quant_1 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
       fisher_inv_ = sess.run(fisher_inv)
@@ -1088,7 +1088,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
           self.in_channels)
       expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
       inv_matrix_ = sess.run(inv_matrix)
-      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_, rtol=1e-5)
 
       quant_0 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
       quant_1 = np.zeros((inv_dim, inv_dim))
@@ -1165,7 +1165,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
       fisher_inv_ = sess.run(fisher_inv)
       fisher_ = quant_1 + np.matmul(quant_3, quant_3.transpose())
       expected_fisher_inv_ = np.linalg.inv(fisher_)
-      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_, rtol=1e-5)
 
       input_tensor_, output_tensor_ = sess.run([input_tensor, output_tensor])
       expected_output_tensor_ = np.matmul(expected_fisher_inv_, input_tensor_)
@@ -1223,7 +1223,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
           self.in_channels)
       expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
       inv_matrix_ = sess.run(inv_matrix)
-      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_, rtol=1e-5)
 
       quant_0 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
       quant_1 = np.zeros((inv_dim, inv_dim))
