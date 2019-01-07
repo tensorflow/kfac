@@ -1126,13 +1126,13 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
     inv_update_op = factor.make_inverse_update_ops()
     inv_matrix = factor.get_inv_vars()[0]
 
-    fisher_inv_opeartor = factor.get_matpower(-1., self.damping_func)
-    fisher_inv = fisher_inv_opeartor.to_dense()
+    fisher_inv_operator = factor.get_matpower(-1., self.damping_func)
+    fisher_inv = fisher_inv_operator.to_dense()
     inv_dim = self.kw_kh * self.in_channels
     self.assertEqual([inv_dim, inv_dim], fisher_inv.shape.as_list())
 
     input_tensor = tf.random_uniform(shape=(inv_dim, 1), maxval=10.)
-    output_tensor = fisher_inv_opeartor.matmul(input_tensor)
+    output_tensor = fisher_inv_operator.matmul(input_tensor)
 
     cov_trace = factor.get_cov_as_linear_operator().trace()
     cov_damping = factor.get_matpower(1, self.damping_func).to_dense()
@@ -1154,7 +1154,8 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
           self.in_channels)
       expected_inv_matrix_ = np.linalg.inv(expected_cov_damping_)
       inv_matrix_ = sess.run(inv_matrix)
-      self.assertAllClose(expected_inv_matrix_, inv_matrix_)
+
+      self.assertAllClose(expected_inv_matrix_, inv_matrix_, rtol=1e-5)
 
       quant_1 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
       quant_2 = np.kron((1. / inputs_.shape[0]) * np.sum(inputs_, axis=0),
