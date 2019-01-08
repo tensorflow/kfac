@@ -82,7 +82,7 @@ class KfacMultiRunOpt(optimizer.KfacOptimizer):
           initializer=tf.zeros_initializer, use_resource=True)
 
     if self._adapt_damping:
-      raise ValueError("Adapting damping currently not supported with "
+      raise ValueError("Damping adaptation currently not supported with "
                        "KfacMultiRunOpt.")
 
   @property

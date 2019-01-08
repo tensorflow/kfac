@@ -120,8 +120,8 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
       An op that when run will run the update ops at their update frequencies.
     """
     # This if-statement is a trick/hack to maintain compatibility with
-    # CrossShardOptimizer. (CrossShardOptimizer bypasses our custom minimize
-    # method that would otherwise always make the variables).
+    # CrossShardOptimizer or other optimizers that might not call our
+    # custom minimize() method (that would otherwise always make the variables).
     if not self._made_vars_already:
       (cov_update_thunks,
        inv_update_thunks) = self.make_vars_and_create_op_thunks()
@@ -136,7 +136,9 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         lambda: tf.group(*(thunk() for thunk in cov_update_thunks)),
         tf.no_op)
 
-    with tf.control_dependencies([maybe_cov_updates]):
+    maybe_adapt_damping = self.maybe_adapt_damping()
+
+    with tf.control_dependencies([maybe_cov_updates, maybe_adapt_damping]):
       should_do_inv_updates = tf.equal(tf.mod(self.counter,
                                               self._invert_every), 0)
       maybe_inv_updates = tf.cond(
