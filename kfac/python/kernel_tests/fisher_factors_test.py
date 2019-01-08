@@ -1035,7 +1035,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
       quant_1 = np.kron(expected_cov_damping_, np.eye(self.kw_kh))
       fisher_inv_ = sess.run(fisher_inv)
       expected_fisher_inv_ = np.linalg.inv(quant_1)
-      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_, rtol=1e-5)
 
       expected_cov_trace_ = np.kron(expected_cov_, np.eye(self.kw_kh)).trace()
       cov_trace_ = sess.run(cov_trace)
@@ -1097,7 +1097,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
 
       fisher_inv_ = sess.run(fisher_inv)
       expected_fisher_inv_ = np.linalg.inv(quant_1)
-      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_, rtol=1e-5)
 
       expected_cov_trace_ = np.kron(expected_cov_, np.eye(self.kw_kh),).trace()
       cov_trace_ = sess.run(cov_trace)
@@ -1169,7 +1169,8 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
 
       input_tensor_, output_tensor_ = sess.run([input_tensor, output_tensor])
       expected_output_tensor_ = np.matmul(expected_fisher_inv_, input_tensor_)
-      self.assertAllClose(output_tensor_, expected_output_tensor_, atol=1e-5)
+      self.assertAllClose(output_tensor_, expected_output_tensor_, rtol=1e-5,
+                          atol=1e-5)
 
       expected_cov_trace_ = np.kron(expected_cov_, np.eye(
           self.kw_kh)).trace() + np.dot(quant_2, quant_2)
@@ -1239,7 +1240,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
       fisher_inv_ = sess.run(fisher_inv)
       fisher_ = quant_1 + np.matmul(quant_3, quant_3.transpose())
       expected_fisher_inv_ = np.linalg.inv(fisher_)
-      self.assertAllClose(fisher_inv_, expected_fisher_inv_)
+      self.assertAllClose(fisher_inv_, expected_fisher_inv_, rtol=1e-5)
 
       expected_cov_trace_ = np.kron(expected_cov_, np.eye(
           self.kw_kh)).trace() + np.dot(quant_2, quant_2) + 1.
@@ -1250,7 +1251,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
       self.assertAllClose(fisher_, cov_damping_)
       expected_id_ = np.matmul(cov_damping_, fisher_inv_)
       self.assertAllClose(
-          expected_id_, np.eye(expected_id_.shape[0]), atol=1e-5)
+          expected_id_, np.eye(expected_id_.shape[0]), rtol=1e-5, atol=1e-5)
 
 
 if __name__ == '__main__':
