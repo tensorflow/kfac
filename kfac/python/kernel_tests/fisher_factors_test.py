@@ -1170,7 +1170,7 @@ class ConvInputSUAKroneckerFactorTest(ConvFactorTestCase):
       input_tensor_, output_tensor_ = sess.run([input_tensor, output_tensor])
       expected_output_tensor_ = np.matmul(expected_fisher_inv_, input_tensor_)
       self.assertAllClose(output_tensor_, expected_output_tensor_, rtol=1e-5,
-                          atol=1e-5)
+                          atol=5e-5)
 
       expected_cov_trace_ = np.kron(expected_cov_, np.eye(
           self.kw_kh)).trace() + np.dot(quant_2, quant_2)
