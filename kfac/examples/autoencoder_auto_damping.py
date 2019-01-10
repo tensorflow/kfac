@@ -199,7 +199,7 @@ class AutoEncoder(snt.AbstractModule):
     return output
 
 
-def compute_accuracy(logits=None, labels=None):
+def compute_squared_error(logits=None, labels=None):
   """Compute mean squared error."""
   return tf.reduce_sum(tf.reduce_mean(tf.square(labels - tf.nn.sigmoid(logits)),
                                       axis=0))
@@ -222,8 +222,8 @@ def compute_loss(logits=None,
     layer_collection.auto_register_layers()
 
   if return_acc:
-    accuracy = compute_accuracy(logits=logits, labels=labels)
-    return regularized_loss, accuracy
+    squared_error = compute_squared_error(logits=logits, labels=labels)
+    return regularized_loss, squared_error
 
   return regularized_loss
 
