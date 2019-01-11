@@ -827,3 +827,46 @@ tf.register_tensor_conversion_function(
 
 # TODO(b/69623235): Add a function for finding tensors that share gradients
 # to eliminate redundant fisher factor computations.
+
+
+def _check_match_lists_of_pairs(list1, list2):
+  for (_, var1), (_, var2) in zip(list1, list2):
+    if var1 is not var2:
+      raise ValueError("The variables referenced by the two arguments "
+                       "must match.")
+
+
+def sprod(scalar, list_):
+  # Product of scalar with list of items.
+  return tuple(scalar*item for item in list_)
+
+
+def sprod_p(scalar, list_):
+  # Product of scalar with list of (item, var) pairs.
+  return tuple((scalar*item, var) for (item, var) in list_)
+
+
+def sum_(list1, list2):
+  # Element-wise sum of lists of tensors.
+  return tuple(item1 + item2 for item1, item2 in zip(list1, list2))
+
+
+def sum_p(list1, list2):
+  # Element-wise sum of lists of (tensor, var) pairs.
+  _check_match_lists_of_pairs(list1, list2)
+  return tuple((item1 + item2, var1)
+               for (item1, var1), (item2, var2) in zip(list1, list2))
+
+
+def ip(list1, list2):
+  # Inner product of lists of tensors.
+  return tf.add_n(tuple(tf.reduce_sum(tensor1 * tensor2)
+                        for tensor1, tensor2 in zip(list1, list2)))
+
+
+def ip_p(list1, list2):
+  # Inner product of lists of (tensor, var) pairs.
+  _check_match_lists_of_pairs(list1, list2)
+
+  return ip(tuple(tensor for (tensor, _) in list1),
+            tuple(tensor for (tensor, _) in list2))

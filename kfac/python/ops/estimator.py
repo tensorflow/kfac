@@ -84,7 +84,9 @@ class FisherEstimator(object):
                colocate_gradients_with_ops=True,
                name="FisherEstimator",
                compute_cholesky=False,
-               compute_cholesky_inverse=False):
+               compute_cholesky_inverse=False,
+               compute_params_stats=False,
+               batch_size=None):
     """Create a FisherEstimator object.
 
     Args:
@@ -142,6 +144,14 @@ class FisherEstimator(object):
       compute_cholesky_inverse: Bool. Whether or not the FisherEstimator
         will be able to multiply vectors by the Cholesky factor inverse.
         (Default: False)
+      compute_params_stats: Bool. If True, we compute the first order version
+        of the statistics computed to estimate the Fisher/GGN. These correspond
+        to the `variables` method in a one-to-one fashion.  They are available
+        via the `params_stats` property.  When estimation_mode is 'empirical',
+        this will correspond to the standard parameter gradient on the loss.
+        (Default: False)
+      batch_size: The size of the mini-batch. Only needed when
+        `compute_params_stats` is True. (Default: None)
     Raises:
       ValueError: If no losses have been registered with layer_collection.
     """
@@ -175,6 +185,13 @@ class FisherEstimator(object):
     self._compute_cholesky_inverse = compute_cholesky_inverse
 
     self._name = name
+
+    self._compute_params_stats = compute_params_stats
+    self._batch_size = batch_size
+
+    if compute_params_stats and batch_size is None:
+      raise ValueError("Batch size needs to be passed in when "
+                       "compute_params_stats is True.")
 
     self._finalized = False
 
@@ -213,6 +230,10 @@ class FisherEstimator(object):
   @property
   def mat_type(self):
     return self._mat_type_table[self._estimation_mode]
+
+  @property
+  def params_stats(self):
+    return self._params_stats
 
   @abc.abstractmethod
   def _place_and_compute_tranformation_thunks(self, thunks):
@@ -352,12 +373,27 @@ class FisherEstimator(object):
         block.tensors_to_compute_grads() for block in blocks
     ]
 
+    if self._compute_params_stats:
+      tensors_to_compute_grads = tensors_to_compute_grads + self.variables
+
     try:
       grads_lists = self._gradient_fns[self._estimation_mode](
           tensors_to_compute_grads)
     except KeyError:
       raise ValueError("Unrecognized value {} for estimation_mode.".format(
           self._estimation_mode))
+
+    if self._compute_params_stats:
+
+      idx = len(blocks)
+      params_stats_unnorm = tuple(tf.add_n(grad_list)
+                                  for grad_list in grads_lists[idx:])
+
+      scalar = 1. / tf.cast(self._batch_size,
+                            dtype=params_stats_unnorm[0].dtype)
+      self._params_stats = utils.sprod(scalar, params_stats_unnorm)
+
+      grads_lists = grads_lists[:idx]
 
     for grads_list, block in zip(grads_lists, blocks):
       block.instantiate_factors(grads_list, self.damping)
