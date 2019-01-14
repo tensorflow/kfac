@@ -177,8 +177,8 @@ class CurvatureMatrixVectorProductComputer(object):
         loss_inner_vecs)
     return self._multiply_jacobian_transpose(fisher_factor_transpose_vecs)
 
-  def multiply_ggn(self, vecs):
-    """Multiply vecs by GGN of total loss."""
+  def multiply_hessian(self, vecs):
+    """Multiply vecs by Hessian of total loss."""
     return tf.gradients(
         tf.gradients(
             self._total_loss,
