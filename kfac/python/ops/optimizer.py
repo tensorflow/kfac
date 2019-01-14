@@ -376,7 +376,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # standard optimizers do.
 
     if self._loss is None:
-      self._loss = args[0]
+      self._loss = kwargs["loss"] if "loss" in kwargs else args[0]
 
     if kwargs.get("var_list"):
       self.check_var_list(kwargs["var_list"])
@@ -390,7 +390,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
   def compute_gradients(self, *args, **kwargs):
 
     if self._loss is None:
-      self._loss = args[0]
+      self._loss = kwargs["loss"] if "loss" in kwargs else args[0]
 
     if kwargs.get("var_list"):
       self.check_var_list(kwargs["var_list"])
