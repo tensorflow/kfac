@@ -586,27 +586,6 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                  tuple(self._zeros_slot(var, "velocity", self.get_name())
                        for var in variables))
 
-  def _compute_qmodel_wrapper(self, grads_and_vars, updates_and_vars):
-    """Wrapper function for `self._compute_qmodel`.
-
-    Converts to a different form of arguments from the "list of pairs" style
-    that TensorFlow usually uses.  Also retrieves the previous updates from the
-    velocity variables.
-
-    Args:
-      grads_and_vars: List of (gradient, variable) pairs.
-      updates_and_vars: List of (update, variable) pairs.
-
-    Returns:
-      See the docstring for _compute_qmodel().
-    """
-    updates = list(update for (update, _) in updates_and_vars)
-    grads = list(grad for (grad, _) in grads_and_vars)
-    variables = list(var for (_, var) in grads_and_vars)
-    prev_updates = self._compute_prev_updates(variables)
-
-    return self._compute_qmodel(updates, prev_updates, grads, variables)
-
   def _compute_qmodel(self, updates, prev_updates, grads, variables):
     """Computes the 2 dimensional version of the (exact) quadratic model.
 
