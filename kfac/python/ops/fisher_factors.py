@@ -1018,90 +1018,112 @@ class NaiveDiagonalFactor(DiagonalFactor):
     return None
 
 
-class EmbeddingInputKroneckerFactor(DiagonalFactor):
-  r"""FisherFactor for input to an embedding layer.
+class DiagonalKroneckerFactor(DiagonalFactor):
+  """A Kronecker FisherFactor using diagonal approximations.
 
-  Given input_ids = [batch_size, input_size] representing indices into an
-  [vocab_size, embedding_size] embedding matrix, approximate input covariance by
-  a diagonal matrix,
+  This class handles both sparse and dense inputs. The covariance is estimated
+  using the diagonal covariance matrix. For a dense tensor:
 
-    Cov(input_ids, input_ids) =
-        (1/batch_size) sum_{i} diag(n_hot(input[i]) ** 2).
+    Cov(inputs, inputs) = (1/batch_size) sum_{i} diag(inputs[i]^T * inputs[i]).
 
-  where n_hot() constructs an n-hot binary vector and diag() constructs a
-  diagonal matrix of size [vocab_size, vocab_size].
+  where inputs[i] is the i-th row vector of the inputs tensor.
+
+  For sparse inputs, one of the most common use cases is the sparse input to an
+  embedding layer. Given tensor = [batch_size, input_size] representing
+  indices into an [vocab_size, embedding_size] embedding matrix, the diagonal
+  covariance matrix is
+
+    Cov(inputs, inputs) =
+        (1/batch_size) sum_{i} diag(n_hot(inputs[i]) ** 2).
+
+  where inputs[i] is the ith list of input ids, n_hot() constructs an n-hot
+  binary vector and diag() constructs a diagonal matrix of size
+  [vocab_size, vocab_size].
   """
 
-  def __init__(self, input_ids, vocab_size, dtype=None):
-    """Instantiate EmbeddingInputKroneckerFactor.
+  def __init__(self, tensors, vocab_size=None, dtype=None):
+    """Instantiate DiagonalKroneckerFactor.
 
     Args:
-      input_ids: List of Tensors of shape [batch_size, input_size] and dtype
-        int32. Indices into embedding matrix. List index is tower.
-      vocab_size: int or 0-D Tensor. Maximum value for entries in 'input_ids'.
-      dtype: dtype for covariance statistics. Must be a floating point type.
-        Defaults to float32.
+      tensors: List of list of Tensors, each of shape [batch_size, n]. First
+        index is source, second index is tower. Two types of tensors are
+        supported. Dense tensors are typically either a layer's inputs or its
+        output's gradients. Sparse tensors are typically indices into an
+        [vocab_size, embedding_dim] embedding matrix. If sparse tensors are
+        passed in, vocab_size has to be set as well.
+      vocab_size: int or 0-D Tensor. Should be set only for sparse inputs.
+        Maximum value for entries in tensors.
+      dtype: dtype for covariance statistics. Only used for sparse inputs. Must
+        be a floating point type. Defaults to float32.
     """
-    self._input_ids = input_ids
+    self._dense_input = (vocab_size is None)
+    self._tensors = tensors
     self._vocab_size = vocab_size
-    self._cov_dtype = dtype or tf.float32
+    dtype = dtype or tf.float32
+    self._cov_dtype = self._tensors[0][0].dtype if self._dense_input else dtype
 
-    super(EmbeddingInputKroneckerFactor, self).__init__()
+    super(DiagonalKroneckerFactor, self).__init__()
 
   @property
   def _var_scope(self):
-    return "ff_diag_embedding_" + scope_string_from_params(self._input_ids)
+    return "ff_diag_kron_" + scope_string_from_params(
+        nest.flatten(self._tensors))
 
   @property
   def _cov_shape(self):
-    return [self._vocab_size]
+    if self._dense_input:
+      size = self._tensors[0][0].shape[1]
+    else:
+      size = self._vocab_size
+    return [size]
 
   @property
   def _num_sources(self):
-    return 1
+    return len(self._tensors)
 
   @property
   def _num_towers(self):
-    return len(self._input_ids)
+    return len(self._tensors[0])
 
   @property
   def _dtype(self):
     return self._cov_dtype
 
   def _compute_new_cov(self, source, tower):
-    assert source == 0
+    tensor = self._tensors[source][tower]
 
-    input_ids = self._input_ids[tower]
-
-    if len(input_ids.shape) > 2:
+    if len(tensor.shape) > 2:
       raise ValueError(
-          "Input to embeddings must have rank <= 2. Found rank %d." % len(
-              input_ids.shape))
+          "Input tensors to DiagonalKroneckerFactor must have rank <= 2. "
+          "Found tensor with wrong rank: {}".format(tensor))
+    batch_size = tf.shape(tensor)[0]
 
-    batch_size = tf.shape(input_ids)[0]
+    if self._dense_input:
+      new_cov = tf.square(tensor)
+    else:
+      # Transform indices into one-hot vectors.
+      #
+      # TODO(b/72714822): There must be a faster way to construct the diagonal
+      # covariance matrix! This operation is O(batch_size * vocab_size), where
+      # it should be O(batch_size * input_size).
+      flat_input_ids = tf.reshape(tensor, [-1])
+      new_cov = tf.one_hot(flat_input_ids, self._vocab_size)  # [?, vocab_size]
 
-    # Transform indices into one-hot vectors.
-    #
-    # TODO(b/72714822): There must be a faster way to construct the diagonal
-    # covariance matrix! This operation is O(batch_size * vocab_size), where
-    # it should be O(batch_size * input_size).
-    flat_input_ids = tf.reshape(input_ids, [-1])
-    one_hots = tf.one_hot(flat_input_ids, self._vocab_size)  # [?, vocab_size]
+      # Take average across examples. Note that, because all entries have
+      # magnitude zero or one, there's no need to square the entries.
+      #
+      # TODO(b/72714822): Support for SparseTensor, other kinds of aggregation
+      # within an example such as average.
+      #
+      # TODO(b/72714822): Support for partitioned embeddings.
 
-    # Take average across examples. Note that, because all entries have
-    # magnitude zero or one, there's no need to square the entries.
-    #
-    # TODO(b/72714822): Support for SparseTensor, other kinds of aggregation
-    # within an example such as average.
-    #
-    # TODO(b/72714822): Support for partitioned embeddings.
-    new_cov = tf.reduce_sum(one_hots, axis=0)  # [vocab_size]
+    new_cov = tf.reduce_sum(new_cov, axis=0)
     new_cov /= tf.cast(batch_size, new_cov.dtype)
 
     return new_cov
 
   def _get_data_device(self, tower):
-    return self._input_ids[tower].device
+    return self._tensors[0][tower].device
 
 
 class FullyConnectedDiagonalFactor(DiagonalFactor):

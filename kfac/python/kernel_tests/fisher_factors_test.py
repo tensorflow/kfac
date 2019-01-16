@@ -466,22 +466,22 @@ class NaiveDiagonalFactorTest(tf.test.TestCase):
       self.assertAllClose([[0.75], [1.5]], new_cov)
 
 
-class EmbeddingInputKroneckerFactorTest(tf.test.TestCase):
+class DiagonalKroneckerFactorTest(tf.test.TestCase):
 
-  def testInitialization(self):
+  def testInitializationSparse(self):
     with tf.Graph().as_default():
       input_ids = tf.constant([[0], [1], [4]])
       vocab_size = 5
-      factor = ff.EmbeddingInputKroneckerFactor((input_ids,), vocab_size)
+      factor = ff.DiagonalKroneckerFactor(((input_ids,),), vocab_size)
       factor.instantiate_cov_variables()
       cov = factor.cov
       self.assertEqual(cov.shape.as_list(), [vocab_size])
 
-  def testCovarianceUpdateOp(self):
+  def testCovarianceUpdateOpSparse(self):
     with tf.Graph().as_default():
       input_ids = tf.constant([[0], [1], [4]])
       vocab_size = 5
-      factor = ff.EmbeddingInputKroneckerFactor((input_ids,), vocab_size)
+      factor = ff.DiagonalKroneckerFactor(((input_ids,),), vocab_size)
       factor.instantiate_cov_variables()
       cov_update_op = factor.make_covariance_update_op(0.0)
 
@@ -490,6 +490,34 @@ class EmbeddingInputKroneckerFactorTest(tf.test.TestCase):
         sess.run(cov_update_op)
         new_cov = sess.run(factor.cov)
         self.assertAllClose(np.array([1., 1., 0., 0., 1.]) / 3., new_cov)
+
+  def testInitializationDense(self):
+    with tf.Graph().as_default():
+      inputs = tf.constant([[0.0, 0.3, 0.4],
+                            [1.0, 0.0, 0.0]])
+      factor = ff.DiagonalKroneckerFactor(((inputs,),))
+      factor.instantiate_cov_variables()
+      cov = factor.cov
+      self.assertEqual(cov.shape.as_list(), [3])
+
+  def testCovarianceUpdateOpDense(self):
+    with tf.Graph().as_default():
+      inputs = tf.constant([[0.0, 0.3, 0.4],
+                            [1.0, 0.0, 0.0],
+                            [0.5, -1.0, 0.1]])
+      factor = ff.DiagonalKroneckerFactor(((inputs,),))
+      factor.instantiate_cov_variables()
+      cov_update_op = factor.make_covariance_update_op(0.0)
+
+      exact_cov = tf.matmul(inputs, inputs, transpose_a=True)
+      diag_cov = tf.diag_part(exact_cov) / (
+          tf.cast(tf.shape(inputs)[0], tf.float32))
+
+      with self.test_session() as sess:
+        sess.run(tf.global_variables_initializer())
+        sess.run(cov_update_op)
+        new_cov, expected = sess.run([factor.cov, diag_cov])
+        self.assertAllClose(expected, new_cov)
 
 
 class ConvDiagonalFactorTest(tf.test.TestCase):

@@ -827,8 +827,8 @@ class EmbeddingKFACFB(InputOutputMultiTower, KroneckerProductFB):
     inputs, grads_list = self._process_data(grads_list)
 
     self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.EmbeddingInputKroneckerFactor,
-        (inputs, self._vocab_size))
+        fisher_factors.DiagonalKroneckerFactor,
+        ((inputs,), self._vocab_size))
     self._output_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.FullyConnectedKroneckerFactor, (grads_list,))
     self._setup_damping(damping)
@@ -1593,8 +1593,8 @@ class EmbeddingKFACMultiIndepFB(InputOutputMultiTowerMultiUse,
     inputs, grads_list = self._process_data(grads_list)
 
     self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.EmbeddingInputKroneckerFactor,
-        (inputs, self._vocab_size))
+        fisher_factors.DiagonalKroneckerFactor,
+        ((inputs,), self._vocab_size))
     self._output_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.FullyConnectedMultiKF, (grads_list, self._num_uses))
     self._setup_damping(damping, normalization=self._num_uses)
