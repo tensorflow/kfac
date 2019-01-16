@@ -478,6 +478,9 @@ def extract_convolution_patches(inputs,
         filters,
         list(spatial_filter_shape) + [in_channels, out_channels])
 
+    if strides is not None and len(strides) == len(inputs.shape):
+      strides = strides[1:-1]  # remove batch and channel dimension
+
     result = tf.nn.convolution(
         inputs,
         filters,

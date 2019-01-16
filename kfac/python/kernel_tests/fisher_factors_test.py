@@ -190,14 +190,14 @@ class NameStringUtilFunctionTest(tf.test.TestCase):
     with tf.Graph().as_default():
       g = self._make_tensor()
       scope_string = ff.scope_string_from_params(g)
-      self.assertEqual('gradients_MatMul_grad_MatMul_1', scope_string)
+      self.assertEqual('gradients_MatMul_grad_MatMul_1_0', scope_string)
 
   def testScopeStringFromParamsMultipleTensors(self):
     with tf.Graph().as_default():
       x = tf.constant(1,)
       y = tf.constant(2,)
       scope_string = ff.scope_string_from_params((x, y))
-      self.assertEqual('Const_Const_1', scope_string)
+      self.assertEqual('Const_0_Const_1_0', scope_string)
 
   def testScopeStringFromParamsMultipleTypes(self):
     with tf.Graph().as_default():
@@ -205,7 +205,7 @@ class NameStringUtilFunctionTest(tf.test.TestCase):
       y = tf.constant(2,)
       scope_string = ff.scope_string_from_params([[1, 2, 3], 'foo', True, 4,
                                                   (x, y)])
-      self.assertEqual('1-2-3_foo_True_4_Const__Const_1', scope_string)
+      self.assertEqual('1-2-3_foo_True_4_Const_0__Const_1_0', scope_string)
 
   def testScopeStringFromParamsUnsupportedType(self):
     with tf.Graph().as_default():
@@ -220,7 +220,7 @@ class NameStringUtilFunctionTest(tf.test.TestCase):
     with tf.Graph().as_default():
       g = self._make_tensor()
       scope_string = ff.scope_string_from_name(g)
-      self.assertEqual('gradients_MatMul_grad_MatMul_1', scope_string)
+      self.assertEqual('gradients_MatMul_grad_MatMul_1_0', scope_string)
 
   def testScalarOrTensorToString(self):
     with tf.Graph().as_default():

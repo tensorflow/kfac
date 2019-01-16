@@ -702,6 +702,61 @@ class LayerCollection(object):
 
     self._add_uses(params, 1)
 
+  def register_conv1d(self,
+                      params,
+                      strides,
+                      padding,
+                      inputs,
+                      outputs,
+                      dilations=None,
+                      reuse=VARIABLE_SCOPE,
+                      sub_sample_inputs=None,
+                      sub_sample_patches=None):
+    """Registers a call to tf.nn.conv1d().
+
+    Args:
+      params: Tensor or 2-tuple of Tensors corresponding to weight and bias of
+        this layer. Weight matrix should have shape [kernel_width, in_channels,
+        out_channels].  Bias should have shape [out_channels].
+      strides: List of 3 ints. Strides for convolution kernel.
+      padding: string. see tf.nn.conv2d for valid values.
+      inputs: Tensor of shape [batch_size, width, in_channels]. Inputs
+        to layer.
+      outputs: Tensor of shape [batch_size, width, out_channels].
+        Output produced by layer.
+      dilations: List of 3 ints. Dilations along each dimension.
+      reuse: bool or str.  If True, this adds 'inputs' and 'outputs' as an
+        additional mini-batch/tower of data to use when estimating the Fisher
+        block for this layer (which must have already been registered). If
+        "VARIABLE_SCOPE", use tf.get_variable_scope().reuse.
+        (Default: "VARIABLE_SCOPE")
+      sub_sample_inputs: `bool`. If True, then subsample the inputs from which
+        the image patches are extracted. (Default: None)
+      sub_sample_patches: `bool`, If `True` then subsample the extracted
+        patches. (Default: None)
+
+    Raises:
+      KeyError: If reuse == True but no FisherBlock found for 'params'.
+      ValueError: If reuse == True and FisherBlock found but of the wrong type.
+    """
+    block = self.register_block(
+        params,
+        fb.ConvKFCBasicFB(
+            layer_collection=self,
+            params=params,
+            padding=padding,
+            strides=strides,
+            data_format="NWC",
+            dilation_rate=dilations,
+            extract_patches_fn="extract_convolution_patches",
+            sub_sample_inputs=sub_sample_inputs,
+            sub_sample_patches=sub_sample_patches,
+            use_sua_approx_for_input_factor=False),
+        reuse=reuse)
+    block.register_additional_tower(inputs, outputs)
+
+    self._add_uses(params, 1)
+
   def register_conv2d(self,
                       params,
                       strides,

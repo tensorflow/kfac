@@ -293,8 +293,9 @@ def scope_string_from_params(params):
 def scope_string_from_name(tensor):
   if isinstance(tensor, (tuple, list)):
     return "__".join([scope_string_from_name(t) for t in tensor])
-  # "gradients/add_4_grad/Reshape:0/replica_0" -> "gradients_add_4_grad_Reshape"
-  tensor_name = tensor.name.split(":")[0].replace("/", "_")
+  # "gradients/add_4_grad/Reshape:0/replica_0" ->
+  # "gradients_add_4_grad_Reshape_0_replica_0"
+  tensor_name = tensor.name.replace("/", "_").replace(":", "_")
   return _GET_SANITIZED_NAME_FN(tensor_name)
 
 
