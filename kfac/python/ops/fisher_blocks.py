@@ -746,7 +746,7 @@ class KroneckerProductFB(FisherBlock):
     reshaped_out = left_factor.matmul(reshaped_out,
                                       adjoint=transpose_left)
     if extra_scale != 1.0:
-      reshaped_out *= tf.cast(extra_scale, dtype=reshaped_out.dtype)
+      reshaped_out = tf.scalar_mul(extra_scale, reshaped_out)
     return utils.mat2d_to_layer_params(vector, reshaped_out)
 
   def multiply_matpower(self, vector, exp):
@@ -1280,9 +1280,122 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
 
   def __init__(self, num_uses=None, *args, **kwargs):
     self._num_uses = num_uses
+    self._tensors_to_compute_grads = []
+    self._has_transpose_use = False
+    self._transpose = None
     super(InputOutputMultiTowerMultiUse, self).__init__(*args, **kwargs)
 
-  def _process_data(self, grads_list):
+  def tensors_to_compute_grads(self):
+    """Tensors to compute derivative of loss with respect to."""
+    return tuple(self._tensors_to_compute_grads)
+
+  def register_additional_tower(self, inputs, outputs, transpose=None):
+    if transpose is None:
+      transpose = [False for input in inputs]
+
+    if len(inputs) != len(outputs) or len(inputs) != len(transpose):
+      raise ValueError(
+          "Length of inputs/outputs/transpose must be consistent. Actual "
+          "len(inputs)={}, len(outputs)={}, len(transpose)={}".format(
+              len(inputs), len(outputs), len(transpose)))
+
+    # Check consistency of "transpose" settings between different towers.
+    if self._transpose is None:
+      self._transpose = transpose
+    elif self._transpose != transpose:
+      raise ValueError(
+          "Transpose settings must be consistent across towers. Came across "
+          "inconsistent transpose lists: {} vs {}".format(
+              self._transpose, transpose))
+
+    inputs_ = []
+    outputs_ = []
+
+    # Build the actual inputs and outputs according to transpose settings.
+    # (If transpose is True for a pair of input/output, the input/output needs
+    # to be switch-placed.)
+    for i in range(len(inputs)):
+      if transpose is None or transpose[i] == False:
+        inputs_.append(inputs[i])
+        outputs_.append(outputs[i])
+      else:
+        inputs_.append(outputs[i])
+        outputs_.append(inputs[i])
+        self._has_transpose_use = True
+
+    self._inputs.append(inputs_)
+    self._outputs.append(outputs_)
+    self._tensors_to_compute_grads.append(outputs)
+
+  def _group_inputs_outputs(self, grads_list):
+    """ Regroup the tensors that contribute to the input and output factors.
+
+    Typically, the input factor is computed from input units ("inputs" in
+    register_additional_tower), and the output factor is computed from estimated
+    gradients of the output units ("outputs" in register_additional_tower). In
+    this typical case, (self._inputs, grads_list) would be returned.
+
+    self._inputs is a list of list of Tensors. The first index
+    is tower, the second is use/time-step. grads_list, meanwhile, is a list
+    over sources of such lists of lists.
+
+    In the atypical case where self._transpose is true for some uses in
+    register_additional_tower, we would need to look up from
+    self._tensors_to_compute_grads which tensors in inputs/outputs should be
+    replaced with their gradients, and return the appropriate updated
+    (inputs, outputs).
+
+    Multiple sources in grads_list is only supported for the typical case
+    described above. To avoid complications caused by multiple sources in
+    grads_list, for now only the single source gradient estimates is supported
+    when "transpose" is true for any inputs.
+
+    Args:
+      grads_list: A list of list of list of tensors. The first index is source,
+        the second index is tower, and the third index is use/time-step. Each
+        tensor is the gradient estimate of a tensor in self._inputs or
+        self._outputs. In the typical case described above, grads_list only
+        contains grads of tensors in self._outputs, since
+        self._tensors_to_compute_grads should contain only and all of tensors
+        in self._outputs.
+
+    Returns:
+      inputs: A list of list of tensors. These are the tensors contributing to
+        the input Kronecker factor for this Fisher block. It is in the same
+        format as self._inputs, where the first index is tower, and the second
+        is use/time-step.
+      outputs: A list of list of list of tensors. These are the tensors
+        contributing to the output Kronecker factor for this Fisher block. It
+        is in the same format as grads_list, where first index is source, second
+        is tower, and third is use/time-step.
+    """
+    # For the typical case described above.
+    if self._has_transpose_use is False:
+      return self._inputs, grads_list
+
+    # Only supporting single source case for now.
+    if len(grads_list) != 1:
+      raise ValueError("Multiple sources is not supported when transpose is "
+                       "True for any set of input/output.")
+
+    # Build a new inputs and outputs for making Fisher factors. Replace
+    # tensors in tensors_to_compute_grads with their grads.
+    inputs = nest.flatten(self._inputs)
+    outputs = nest.flatten(self._outputs)
+
+    for tensor, grad in zip(nest.flatten(self._tensors_to_compute_grads),
+                            nest.flatten(grads_list)):
+      if tensor in inputs:
+        inputs[inputs.index(tensor)] = grad
+      else:
+        outputs[outputs.index(tensor)] = grad
+
+    inputs = nest.pack_sequence_as(self._inputs, inputs)
+    outputs = nest.pack_sequence_as(grads_list, outputs)
+
+    return inputs, outputs
+
+  def _process_data(self, grads_list=None):
     """Process temporal/multi-use data into the format used by the factors.
 
     This function takes inputs and grads_lists data and processes it into
@@ -1332,8 +1445,7 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
       ValueError: If the given/initial format of self._inputs and grads_list
         isn't recognized, or doesn't agree with self._num_uses.
     """
-
-    inputs = self._inputs
+    inputs, grads_list = self._group_inputs_outputs(grads_list)
 
     if isinstance(inputs[0], (list, tuple)):
       num_uses = len(inputs[0])
@@ -1555,20 +1667,23 @@ class EmbeddingKFACMultiIndepFB(InputOutputMultiTowerMultiUse,
                                 KroneckerProductFB):
   """K-FAC FisherBlock for embedding layers used multiple times in the graph.
 
-  Similar to EmbeddingKFACFB except that this version supports multiple uses
-  of the parameter within a single model. These uses could correspond to time
-  steps in an RNN architecture, but they don't have to.
+  Similar to EmbeddingKFACFB, with two differences. First, this version supports
+  multiple uses of the parameter within a single model. These uses could
+  correspond to time steps in an RNN architecture, but they don't have to.
+  Second, the input could be sparse or dense. Sparse inputs are input ids;
+  dense inputs are the one-hot vectors or their equivalent.
 
   Does not support bias parameters.
   """
 
-  def __init__(self, layer_collection, vocab_size, num_uses=None):
+  def __init__(self, layer_collection, vocab_size=None, num_uses=None):
     """Creates a EmbeddingKFACMultiIndepFB block.
 
     Args:
       layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
-      vocab_size: int. Size of vocabulary for this embedding layer.
+        Fisher information matrix to which this FisherBlock belongs.
+      vocab_size: int or None. Size of vocabulary for this embedding layer.
+        Should be None for dense inputs.
       num_uses: int or None. Number of uses of the layer in the model's graph.
         Only required if the data is formatted with time folded into the batch
         dimension (instead of time being a list dimension). (Default: None)

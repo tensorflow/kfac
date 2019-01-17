@@ -1224,6 +1224,8 @@ class LayerCollection(object):
                                params,
                                inputs,
                                outputs,
+                               dense_inputs=False,
+                               transpose=None,
                                num_uses=None,
                                approx=None,
                                reuse=VARIABLE_SCOPE):
@@ -1231,8 +1233,9 @@ class LayerCollection(object):
 
     Args:
       params: Embedding matrix of shape [vocab_size, embedding_size].
-      inputs: A list of Tensors, each of shape [batch_size, input_size] and
-        dtype int32. Indices into embedding matrix. The list indexes each use
+      inputs: A list of Tensors, each of shape [batch_size, input_size]. Handles
+        either sparse inputs (indices into embedding matrix) or dense inputs
+        (the one-hot vectors into embedding matrix). The list indexes each use
         in the model (which might correspond to a "time-step" in an RNN).
         OR, can be single Tensor, of shape [num_uses, batch_size, input_size],
         which is a reshaped version of a Tensor of shape [num_uses, batch_size,
@@ -1244,6 +1247,9 @@ class LayerCollection(object):
         single Tensor, of shape [num_uses * batch_size, embedding_size], which
         is a reshaped version of a Tensor of shape [num_uses, batch_size,
         embedding_size].
+      dense_inputs: bool. True if inputs are dense tensors. Defaults to False.
+      transpose: A list of bool, specifying if the params is transposed for each
+        pair of input/output.
       num_uses: int or None. The number uses/time-steps in the model where the
         layer appears. Only needed if both inputs and outputs are given in the
         single Tensor format. (Default: None)
@@ -1269,11 +1275,12 @@ class LayerCollection(object):
 
     if isinstance(params, (tuple, list)):
       raise ValueError("Bias not supported.")
-    vocab_size = int(params.shape[0])
+
+    vocab_size = None if dense_inputs else int(params.shape[0])
 
     block = self.register_block(
         params, block_type(self, vocab_size, num_uses=num_uses), reuse=reuse)
-    block.register_additional_tower(inputs, outputs)
+    block.register_additional_tower(inputs, outputs, transpose=transpose)
 
     if isinstance(inputs, (tuple, list)):
       self._add_uses(params, len(inputs))

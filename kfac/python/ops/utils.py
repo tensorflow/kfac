@@ -766,7 +766,9 @@ class PartitionedTensor(object):
 
     dtype = tensors[0].dtype
     if not all(tensor.dtype == dtype for tensor in tensors):
-      raise ValueError("all tensors must have dtype = %s." % dtype)
+      raise ValueError(
+          "all tensors must have the same dtype. The tensors are {}".format(
+              tensors))
 
     shape = tensors[0].shape[1:]
     if not all(tensor.shape[1:] == shape for tensor in tensors):

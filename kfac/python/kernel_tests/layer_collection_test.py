@@ -139,8 +139,11 @@ class LayerCollectionTest(tf.test.TestCase):
       lc.register_embedding_multi(
           tf.constant((1,)), (tf.constant(2), tf.constant(3)),
           (tf.constant(4), tf.constant(5)))
+      lc.register_embedding_multi(
+          tf.constant((1,)), (tf.constant(2), tf.constant(3)),
+          (tf.constant(4), tf.constant(5)), transpose=[False, True])
 
-      self.assertEqual(12, len(lc.get_blocks()))
+      self.assertEqual(13, len(lc.get_blocks()))
 
   def testRegisterBlocksMultipleRegistrations(self):
     with tf.Graph().as_default():

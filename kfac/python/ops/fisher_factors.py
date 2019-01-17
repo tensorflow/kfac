@@ -285,8 +285,8 @@ def scope_string_from_params(params):
     elif isinstance(param, utils.PartitionedTensor):
       name_parts.append(scope_string_from_name(param.tensors))
     else:
-      raise ValueError("Encountered an unsupported param type {}".format(
-          type(param)))
+      raise ValueError("Encountered an unsupported param {} of type {}".format(
+          param, type(param)))
   return "_".join(name_parts)
 
 
@@ -1024,9 +1024,7 @@ class DiagonalKroneckerFactor(DiagonalFactor):
   This class handles both sparse and dense inputs. The covariance is estimated
   using the diagonal covariance matrix. For a dense tensor:
 
-    Cov(inputs, inputs) = (1/batch_size) sum_{i} diag(inputs[i]^T * inputs[i]).
-
-  where inputs[i] is the i-th row vector of the inputs tensor.
+    Cov(inputs, inputs) = (1/batch_size) sum_{i} diag(inputs[i,:] ** 2).
 
   For sparse inputs, one of the most common use cases is the sparse input to an
   embedding layer. Given tensor = [batch_size, input_size] representing
