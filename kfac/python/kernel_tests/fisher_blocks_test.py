@@ -1012,6 +1012,22 @@ class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
       damping = tf.constant(0.)
       block.instantiate_factors(((grads,),), damping)
 
+  def testInstantiateFactorsSingleTensors(self):
+    with tf.Graph().as_default():
+      tf.set_random_seed(200)
+
+      vocab_size = 5
+      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size,
+                                           num_uses=2)
+
+      inputs = tf.constant([[0, 1], [1, 2], [2, 3]])
+      outputs = tf.constant([[0.], [1.], [2.]])
+      block.register_additional_tower(inputs, outputs)
+
+      grads = outputs**2
+      damping = tf.constant(0.)
+      block.instantiate_factors(((grads,),), damping)
+
   def testInstantiateFactorsTranspose(self):
     with tf.Graph().as_default():
       tf.set_random_seed(200)

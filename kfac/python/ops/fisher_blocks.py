@@ -1290,38 +1290,47 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
     return tuple(self._tensors_to_compute_grads)
 
   def register_additional_tower(self, inputs, outputs, transpose=None):
-    if transpose is None:
-      transpose = [False for input in inputs]
+    if isinstance(inputs, (tuple, list)):
+      if transpose is None:
+        transpose = [False for input in inputs]
 
-    if len(inputs) != len(outputs) or len(inputs) != len(transpose):
-      raise ValueError(
-          "Length of inputs/outputs/transpose must be consistent. Actual "
-          "len(inputs)={}, len(outputs)={}, len(transpose)={}".format(
-              len(inputs), len(outputs), len(transpose)))
+      if len(inputs) != len(outputs) or len(inputs) != len(transpose):
+        raise ValueError(
+            "Length of inputs/outputs/transpose must be consistent. Actual "
+            "len(inputs)={}, len(outputs)={}, len(transpose)={}".format(
+                len(inputs), len(outputs), len(transpose)))
 
-    # Check consistency of "transpose" settings between different towers.
-    if self._transpose is None:
-      self._transpose = transpose
-    elif self._transpose != transpose:
-      raise ValueError(
-          "Transpose settings must be consistent across towers. Came across "
-          "inconsistent transpose lists: {} vs {}".format(
-              self._transpose, transpose))
+      # Check consistency of "transpose" settings between different towers.
+      if self._transpose is None:
+        self._transpose = transpose
+      elif self._transpose != transpose:
+        raise ValueError(
+            "Transpose settings must be consistent across towers. Came across "
+            "inconsistent transpose lists: {} vs {}".format(
+                self._transpose, transpose))
 
-    inputs_ = []
-    outputs_ = []
+      inputs_ = []
+      outputs_ = []
 
-    # Build the actual inputs and outputs according to transpose settings.
-    # (If transpose is True for a pair of input/output, the input/output needs
-    # to be switch-placed.)
-    for i in range(len(inputs)):
-      if transpose is None or transpose[i] == False:
-        inputs_.append(inputs[i])
-        outputs_.append(outputs[i])
-      else:
-        inputs_.append(outputs[i])
-        outputs_.append(inputs[i])
-        self._has_transpose_use = True
+      # Build the actual inputs and outputs according to transpose settings.
+      # (If transpose is True for a pair of input/output, the input/output needs
+      # to be switch-placed.)
+      for i in range(len(inputs)):
+        if transpose is None or transpose[i] == False:
+          inputs_.append(inputs[i])
+          outputs_.append(outputs[i])
+        else:
+          inputs_.append(outputs[i])
+          outputs_.append(inputs[i])
+          self._has_transpose_use = True
+    else:
+      # If inputs and outputs are single tensors of size [batch_size * num_uses,
+      # units], then nothing needs to be transposed.
+      if transpose is not None:
+        raise ValueError("transpose should be None for single tensor inputs and"
+                         " outputs. Actual: {}".format(transpose))
+      inputs_ = inputs
+      outputs_ = outputs
 
     self._inputs.append(inputs_)
     self._outputs.append(outputs_)
