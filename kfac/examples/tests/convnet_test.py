@@ -142,7 +142,7 @@ class ConvNetTest(tf.test.TestCase):
       # but there are too few parameters for the model to effectively memorize
       # the training set the way an MLP can.
       convnet.train_mnist_single_machine(
-          data_dir=None, num_epochs=1, use_fake_data=True, device="/cpu:0")
+          num_epochs=1, use_fake_data=True, device="/cpu:0")
 
   def testTrainMnistMultitower(self):
     # For some reason the following configuration option allows this code to
@@ -156,7 +156,6 @@ class ConvNetTest(tf.test.TestCase):
     with tf.Graph().as_default():
       # Ensure model training doesn't crash.
       convnet.train_mnist_multitower(
-          data_dir=None,
           num_epochs=1,
           num_towers=2,
           devices=("/cpu:0", "/cpu:1"),
@@ -172,7 +171,6 @@ class ConvNetTest(tf.test.TestCase):
           num_worker_tasks=1,
           num_ps_tasks=0,
           master="",
-          data_dir=None,
           num_epochs=2,
           op_strategy="chief_worker",
           use_fake_data=True)
@@ -180,8 +178,7 @@ class ConvNetTest(tf.test.TestCase):
   def testTrainMnistEstimator(self):
     with tf.Graph().as_default():
       # Ensure model training doesn't crash.
-      convnet.train_mnist_estimator(
-          data_dir=None, num_epochs=1, use_fake_data=True)
+      convnet.train_mnist_estimator(num_epochs=1, use_fake_data=True)
 
 
 if __name__ == "__main__":

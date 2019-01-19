@@ -12,7 +12,7 @@ than a carefully tuned fixed value, depending on the problem.
 [kfac_damp]: https://github.com/tensorflow/kfac/tree/master/docs/examples/parameters.md
 
 **Example code**:
-https://github.com/tensorflow/kfac/tree/master/kfac/examples/autoencoder_auto_damping.py
+https://github.com/tensorflow/kfac/tree/master/kfac/examples/autoencoder_mnist.py
 
 Using this method to auto tune damping requires changes to the basic KFAC
 training script, which are described below. We only highlight additional steps

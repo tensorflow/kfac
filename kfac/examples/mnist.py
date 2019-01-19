@@ -25,37 +25,48 @@ import tensorflow as tf
 __all__ = [
     'load_mnist_as_tensors',
     'load_mnist_as_dataset',
+    'load_mnist_as_iterator',
 ]
 
 
-def load_mnist_as_tensors(data_dir, flatten_images=True):
+def load_mnist_as_tensors(flatten_images=True):
   """Loads MNIST as Tensors.
 
   Args:
-    data_dir: string. Directory to read MNIST examples from.
     flatten_images: bool. If True, [28, 28, 1]-shaped images are flattened into
       [784]-shaped vectors.
 
   Returns:
     images, labels, num_examples
   """
-  mnist_data = tf.contrib.learn.datasets.mnist.read_data_sets(
-      data_dir, reshape=flatten_images)
-  num_examples = len(mnist_data.train.labels)
-  images = mnist_data.train.images
-  labels = mnist_data.train.labels
 
-  images = tf.constant(np.asarray(images, dtype=np.float32))
-  labels = tf.constant(np.asarray(labels, dtype=np.int64))
+#   mnist_data = tf.contrib.learn.datasets.mnist.read_data_sets(
+#       '/tmp/mnist', reshape=flatten_images)
+#   num_examples = len(mnist_data.train.labels)
+#   images = mnist_data.train.images
+#   labels = mnist_data.train.labels
+#
+#   images = tf.constant(np.asarray(images, dtype=np.float32))
+#   labels = tf.constant(np.asarray(labels, dtype=np.int64))
+
+  (images, labels), _ = tf.keras.datasets.mnist.load_data()
+  num_examples = images.shape[0]
+
+  if flatten_images:
+    images = images.reshape(images.shape[0], 28**2)
+  else:
+    images = images.reshape(images.shape[0], 28, 28, 1)
+
+  images = images.astype('float32')
+  images /= 255
 
   return images, labels, num_examples
 
 
-def load_mnist_as_dataset(data_dir, flatten_images=True):
+def load_mnist_as_dataset(flatten_images=True):
   """Loads MNIST as a Dataset object.
 
   Args:
-    data_dir: string. Directory to read MNIST examples from.
     flatten_images: bool. If True, [28, 28, 1]-shaped images are flattened into
       [784]-shaped vectors.
 
@@ -65,6 +76,44 @@ def load_mnist_as_dataset(data_dir, flatten_images=True):
     in the MNIST dataset (should be 55000).
   """
   images, labels, num_examples = load_mnist_as_tensors(
-      data_dir, flatten_images=flatten_images)
+      flatten_images=flatten_images)
   dataset = tf.data.Dataset.from_tensor_slices((images, labels))
   return dataset, num_examples
+
+
+def load_mnist_as_iterator(num_epochs, batch_size,
+                           use_fake_data=False,
+                           flatten_images=True):
+  """Loads MNIST dataset as an iterator Tensor.
+
+  Args:
+    num_epochs: int. Number of passes to make over the dataset.
+    batch_size: int. Number of examples per minibatch.
+    use_fake_data: bool. If True, generate a synthetic dataset rather than
+      reading MNIST in.
+    flatten_images: bool. If True, [28, 28, 1]-shaped images are flattened into
+      [784]-shaped vectors.
+
+  Returns:
+    examples: Tensor of shape [batch_size, 784] if 'flatten_images' is
+      True, else [batch_size, 28, 28, 1]. Each row is one example.
+      Values in [0, 1].
+    labels: Tensor of shape [batch_size]. Indices of integer corresponding to
+      each example. Values in {0...9}.
+  """
+
+  if use_fake_data:
+    rng = np.random.RandomState(42)
+    num_examples = batch_size * 4
+    images = rng.rand(num_examples, 28 * 28)
+    if not flatten_images:
+      images = np.reshape(images, [num_examples, 28, 28, 1])
+    labels = rng.randint(10, size=num_examples)
+    dataset = tf.data.Dataset.from_tensor_slices((np.asarray(
+        images, dtype=np.float32), np.asarray(labels, dtype=np.int64)))
+  else:
+    dataset, num_examples = load_mnist_as_dataset(flatten_images=flatten_images)
+
+  dataset = (dataset.shuffle(num_examples).repeat(num_epochs)
+             .batch(batch_size).prefetch(5))
+  return tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()

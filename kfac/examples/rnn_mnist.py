@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Implementation of Deep AutoEncoder from Martens & Grosse (2015).
+"""RNN trained to do sequential MNIST classification using K-FAC.
 
-This script demonstrates training using KFAC optimizer and updating the
-damping parameter according to the Levenberg-Marquardt rule.
+This demonstrates the use of the RNN approximations from the paper
+"Kronecker-factored Curvature Approximations for Recurrent Neural Networks".
+
+The setup here is similar to the autoencoder example.
 """
 
 from __future__ import absolute_import
@@ -26,7 +28,6 @@ import math
 # Dependency imports
 from absl import flags
 import kfac
-import sonnet as snt
 import tensorflow as tf
 
 from kfac.examples import mnist
@@ -34,32 +35,30 @@ from kfac.python.ops.kfac_utils import data_reader
 from kfac.python.ops.kfac_utils import data_reader_alt
 
 
-# Model parameters
-_ENCODER_SIZES = [1000, 500, 250, 30]
-_DECODER_SIZES = [250, 500, 1000]
-_WEIGHT_DECAY = 1e-5
-_NONLINEARITY = tf.tanh  # Note: sigmoid cannot be used with the default init.
-_WEIGHTS_INITIALIZER = None  # Default init
+# We need this for now since linear layers without biases don't work with
+# automatic scanning at the moment
+_INCLUDE_INPUT_BIAS = True
 
+
+flags.DEFINE_string('kfac_approx', 'kron_indep',
+                    'The type of approximation to use for the recurrent '
+                    'layers. "kron_indep" is the one which assumes '
+                    'independence across time, "kron_series_1" is "Option 1" '
+                    'from the paper, and "kron_series_2" is "Option 2".')
 
 flags.DEFINE_integer('inverse_update_period', 10,
-                     '# of steps between computing inverse of fisher factor '
+                     '# of steps between computing inverse of Fisher factor '
                      'matrices.')
 flags.DEFINE_integer('cov_update_period', 1,
                      '# of steps between computing covaraiance matrices.')
 flags.DEFINE_integer('damping_adaptation_interval', 5,
                      '# of steps between updating the damping parameter.')
 
-flags.DEFINE_float('learning_rate', 5e-3,
+flags.DEFINE_float('learning_rate', 3e-4,
                    'Learning rate to use when adaptation="off".')
 flags.DEFINE_float('momentum', 0.9,
                    'Momentum decay value to use when '
                    'lrmu_adaptation="off" or "only_lr".')
-
-flags.DEFINE_float('weight_decay', 1e-5,
-                   'L2 regularization applied to weight matrices.')
-
-flags.DEFINE_string('data_dir', '/tmp/mnist', 'local mnist dir')
 
 flags.DEFINE_boolean('use_batch_size_schedule', True,
                      'If True then we use the growing mini-batch schedule from '
@@ -81,6 +80,11 @@ flags.DEFINE_string('lrmu_adaptation', 'on',
 flags.DEFINE_boolean('use_alt_data_reader', True,
                      'If True we use the alternative data reader for MNIST '
                      'that is faster for small datasets.')
+
+flags.DEFINE_integer('num_hidden', 128, 'Hidden state dimension of the RNN.')
+
+flags.DEFINE_boolean('use_auto_registration', False,
+                     'Whether to use the automatic registration feature.')
 
 flags.DEFINE_string('device', '/gpu:0',
                     'The device to run the major ops on.')
@@ -153,79 +157,117 @@ def make_train_op(batch_size,
       loss_fn=loss_fn,
       damping_adaptation_decay=0.95,
       damping_adaptation_interval=FLAGS.damping_adaptation_interval,
-      min_damping=FLAGS.weight_decay
+      min_damping=1e-5
       )
   return optimizer.minimize(batch_loss, global_step=global_step), optimizer
 
 
-class AutoEncoder(snt.AbstractModule):
-  """Simple autoencoder module."""
+def eval_model(x, num_classes, layer_collection=None):
+  """Evaluate the model given the data and possibly register it."""
 
-  def __init__(self,
-               input_size,
-               regularizers=None,
-               initializers=None,
-               custom_getter=None,
-               name='AutoEncoder'):
-    super(AutoEncoder, self).__init__(name=name)
+  num_hidden = FLAGS.num_hidden
+  num_timesteps = x.shape[1]
+  num_input = x.shape[2]
 
-    if initializers is None:
-      initializers = {'w': tf.glorot_uniform_initializer(),
-                      'b': tf.zeros_initializer()}
-    if regularizers is None:
-      regularizers = {'w': lambda w: _WEIGHT_DECAY*tf.nn.l2_loss(w),
-                      'b': lambda w: _WEIGHT_DECAY*tf.nn.l2_loss(w),}
+  # Strip off the annoying last dimension of size 1 (added for convenient use
+  # with conv nets).
+  x = x[..., 0]
 
-    with self._enter_variable_scope():
-      self._encoder = snt.nets.MLP(
-          output_sizes=_ENCODER_SIZES,
-          regularizers=regularizers,
-          initializers=initializers,
-          custom_getter=custom_getter,
-          activation=_NONLINEARITY,
-          activate_final=False)
-      self._decoder = snt.nets.MLP(
-          output_sizes=_DECODER_SIZES + [input_size],
-          regularizers=regularizers,
-          initializers=initializers,
-          custom_getter=custom_getter,
-          activation=_NONLINEARITY,
-          activate_final=False)
+  # Unstack to get a list of 'num_timesteps' tensors of
+  # shape (batch_size, num_input)
+  x_unstack = tf.unstack(x, num_timesteps, 1)
 
-  def _build(self, inputs):
-    code = self._encoder(inputs)
-    output = self._decoder(code)
+  # We need to do this manually without cells since we need to get access
+  # to the pre-activations (i.e. the output of the "linear layers").
+  w_in = tf.get_variable('w_in', shape=[num_input, num_hidden])
+  if _INCLUDE_INPUT_BIAS:
+    b_in = tf.get_variable('b_in', shape=[num_hidden])
 
-    return output
+  w_rec = tf.get_variable('w_rec', shape=[num_hidden, num_hidden])
+  b_rec = tf.get_variable('b_rec', shape=[num_hidden])
+
+  a = tf.zeros([tf.shape(x_unstack[0])[0], num_hidden], dtype=tf.float32)
+
+  # Here 'a' are the activations, 's' the pre-activations
+  a_list = []
+  s_in_list = []
+  s_rec_list = []
+  s_list = []
+
+  for input_ in x_unstack:
+
+    a_list.append(a)
+
+    s_in = tf.matmul(input_, w_in)
+    if _INCLUDE_INPUT_BIAS:
+      s_in += b_in
+    s_rec = tf.matmul(a, w_rec) + b_rec
+    # s_rec = b_rec + tf.matmul(a, w_rec)  # this breaks the graph scanner
+    s = s_in + s_rec
+
+    s_in_list.append(s_in)
+    s_rec_list.append(s_rec)
+    s_list.append(s)
+
+    a = tf.tanh(s)
+
+  final_rnn_output = a
+
+  # NOTE: we can uncomment the lines below without changing how the algorithm
+  # behaves.  This is because the derivative of the loss w.r.t. to s is the
+  # the same as it is for both s_in and s_rec.  This can be seen easily from
+  # the chain rule.
+  #
+  # s_rec_list = s_list
+  # s_in_list = s_list
+
+  if _INCLUDE_INPUT_BIAS:
+    pin = (w_in, b_in)
+  else:
+    pin = w_in
+
+  if layer_collection:
+    layer_collection.register_fully_connected_multi(pin, x_unstack,
+                                                    s_in_list,
+                                                    approx=FLAGS.kfac_approx)
+
+    layer_collection.register_fully_connected_multi((w_rec, b_rec), a_list,
+                                                    s_rec_list,
+                                                    approx=FLAGS.kfac_approx)
+
+  # Output parameters (need this no matter how we construct the RNN):
+  w_out = tf.get_variable('w_out', shape=[num_hidden, num_classes])
+  b_out = tf.get_variable('b_out', shape=[num_classes])
+
+  logits = tf.matmul(final_rnn_output, w_out) + b_out
+
+  if layer_collection:
+    layer_collection.register_fully_connected((w_out, b_out), final_rnn_output,
+                                              logits)
+
+  return logits
 
 
-def compute_squared_error(logits=None, labels=None):
-  """Compute mean squared error."""
-  return tf.reduce_sum(tf.reduce_mean(tf.square(labels - tf.nn.sigmoid(logits)),
-                                      axis=0))
-
-
-def compute_loss(logits=None,
-                 labels=None,
-                 layer_collection=None,
-                 return_acc=False):
+def compute_loss(inputs, labels, num_classes, layer_collection=None):
   """Compute loss value."""
-  graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-  total_regularization_loss = tf.reduce_sum(graph_regularizers)
-  loss_matrix = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,
-                                                        labels=labels)
-  loss = tf.reduce_sum(tf.reduce_mean(loss_matrix, axis=0))
-  regularized_loss = loss + total_regularization_loss
+
+  with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
+    if FLAGS.use_auto_registration:
+      logits = eval_model(inputs, num_classes)
+    else:
+      logits = eval_model(inputs, num_classes,
+                          layer_collection=layer_collection)
+
+  losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
+                                                          labels=labels)
+  loss = tf.reduce_mean(losses)
 
   if layer_collection is not None:
-    layer_collection.register_multi_bernoulli_predictive_distribution(logits)
-    layer_collection.auto_register_layers()
+    layer_collection.register_softmax_cross_entropy_loss(logits)
+    if FLAGS.use_auto_registration:
+      layer_collection.auto_register_layers()
 
-  if return_acc:
-    squared_error = compute_squared_error(logits=logits, labels=labels)
-    return regularized_loss, squared_error
-
-  return regularized_loss
+  return loss
 
 
 def load_mnist():
@@ -234,16 +276,13 @@ def load_mnist():
   Returns:
     cached_reader: `data_reader.CachedReader` instance which wraps MNIST
       dataset.
-    training_batch: Tensor of shape `[batch_size, 784]`, MNIST training images.
   """
   # Wrap the data set into cached_reader which provides variable sized training
   # and caches the read train batch.
 
   if not FLAGS.use_alt_data_reader:
     # Version 1 using data_reader.py (slow!)
-    dataset, num_examples = mnist.load_mnist_as_dataset(
-        FLAGS.data_dir,
-        flatten_images=True)
+    dataset, num_examples = mnist.load_mnist_as_dataset(flatten_images=False)
     if FLAGS.use_batch_size_schedule:
       max_batch_size = num_examples
     else:
@@ -261,8 +300,7 @@ def load_mnist():
   else:
     # Version 2 using data_reader_alt.py (faster)
     images, labels, num_examples = mnist.load_mnist_as_tensors(
-        FLAGS.data_dir,
-        flatten_images=True)
+        flatten_images=False)
     dataset = (images, labels)
 
     # This version of CachedDataReader requires the dataset to NOT be shuffled
@@ -271,30 +309,30 @@ def load_mnist():
 
 def main(_):
   # Load dataset.
-  batch_size_schedule = [
-      int(min(1000 * math.exp(k / 124.25), 55000)) for k in range(500)
-  ]
-  batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
-  cached_reader = load_mnist()
+  cached_reader, num_examples = load_mnist()
+  num_classes = 10
 
-  # Create autoencoder model using Soham's code instead
-  training_model = AutoEncoder(784)
+  minibatch_maxsize_targetiter = 500
+  minibatch_maxsize = num_examples
+  minibatch_startsize = 1000
+
+  div = (float(minibatch_maxsize_targetiter-1)
+         / math.log(float(minibatch_maxsize)/minibatch_startsize, 2))
+  batch_size_schedule = [
+      min(int(2.**(float(k)/div) * minibatch_startsize), minibatch_maxsize)
+      for k in range(500)
+  ]
+
+  batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
+
   layer_collection = kfac.LayerCollection()
 
-  def loss_fn(minibatch, layer_collection=None, return_acc=False):
-    input_ = minibatch[0]
-    logits = training_model(input_)
-
-    return compute_loss(
-        logits=logits,
-        labels=input_,
-        layer_collection=layer_collection,
-        return_acc=return_acc)
+  def loss_fn(minibatch, layer_collection=None):
+    return compute_loss(minibatch[0], minibatch[1], num_classes,
+                        layer_collection=layer_collection)
 
   minibatch = cached_reader(batch_size)
-  batch_loss, batch_error = loss_fn(minibatch,
-                                    layer_collection=layer_collection,
-                                    return_acc=True)
+  batch_loss = loss_fn(minibatch, layer_collection=layer_collection)
 
   # Make training op
   with tf.device(FLAGS.device):
@@ -328,9 +366,8 @@ def main(_):
       else:
         batch_size_ = FLAGS.batch_size
 
-      _, batch_loss_, batch_error_ = sess.run(
-          [train_op, batch_loss, batch_error],
-          feed_dict={batch_size: batch_size_})
+      _, batch_loss_ = sess.run([train_op, batch_loss],
+                                feed_dict={batch_size: batch_size_})
 
       # We get these things in a separate sess.run() call because they are
       # stored as variables in the optimizer. (So there is no computational cost
@@ -344,8 +381,8 @@ def main(_):
       tf.logging.info(
           'iteration: %d', i)
       tf.logging.info(
-          'mini-batch size: %d | mini-batch loss = %f | mini-batch error = %f ',
-          batch_size_, batch_loss_, batch_error_)
+          'mini-batch size: %d | mini-batch loss = %f',
+          batch_size_, batch_loss_)
       tf.logging.info(
           'learning_rate = %f | momentum = %f',
           learning_rate_, momentum_)

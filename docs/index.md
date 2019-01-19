@@ -37,7 +37,7 @@ reference code [here][autoencoder-code] and plots comparing KFAC with SGD below.
 
 ![](https://github.com/tensorflow/kfac/tree/master/docs/autoencoder.png?raw=True)
 
-[autoencoder-code]: https://github.com/tensorflow/kfac/tree/master/kfac/examples/autoencoder_auto_damping.py
+[autoencoder-code]: https://github.com/tensorflow/kfac/tree/master/kfac/examples/autoencoder_mnist.py
 
 ## How do I use K-FAC?
 

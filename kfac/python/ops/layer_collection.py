@@ -1297,7 +1297,7 @@ class LayerCollection(object):
     """Registers a categorical predictive distribution.
 
     Corresponds to losses computed using
-    tf.nn.softmax_cross_entropy_with_logits.
+    tf.nn.sparse_softmax_cross_entropy_with_logits.
 
     Note that this is distinct from
     register_multi_bernoulli_predictive_distribution and should not be confused
@@ -1339,7 +1339,7 @@ class LayerCollection(object):
     """Registers a softmax cross-entropy loss function.
 
     Corresponds to losses computed using
-    tf.nn.softmax_cross_entropy_with_logits.
+    tf.nn.sparse_softmax_cross_entropy_with_logits.
 
     Note that this is distinct from register_sigmoid_cross_entropy_loss and
     should not be confused with it. It is similar to
@@ -1366,7 +1366,7 @@ class LayerCollection(object):
     loss = lf.CategoricalLogitsNegativeLogProbLoss(logits, targets=targets,
                                                    seed=seed)
     self._register_loss_function(loss, logits,
-                                 "softmax_cross_entropy_loss",
+                                 "sparse_softmax_cross_entropy_loss",
                                  name=name, coeff=coeff, reuse=reuse)
 
   def register_normal_predictive_distribution(self,
