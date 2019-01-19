@@ -48,6 +48,8 @@ def load_mnist_as_tensors(flatten_images=True):
 #
 #   images = tf.constant(np.asarray(images, dtype=np.float32))
 #   labels = tf.constant(np.asarray(labels, dtype=np.int64))
+#
+#   return images, labels, num_examples
 
   (images, labels), _ = tf.keras.datasets.mnist.load_data()
   num_examples = images.shape[0]
@@ -58,6 +60,8 @@ def load_mnist_as_tensors(flatten_images=True):
     images = images.reshape(images.shape[0], 28, 28, 1)
 
   images = images.astype('float32')
+  labels = labels.astype('int32')
+
   images /= 255
 
   return images, labels, num_examples

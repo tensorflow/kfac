@@ -276,6 +276,7 @@ def load_mnist():
   Returns:
     cached_reader: `data_reader.CachedReader` instance which wraps MNIST
       dataset.
+    num_examples: int. The number of training examples.
   """
   # Wrap the data set into cached_reader which provides variable sized training
   # and caches the read train batch.
@@ -295,7 +296,7 @@ def load_mnist():
     dataset = tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()
 
     # This version of CachedDataReader requires the dataset to be shuffled
-    return data_reader.CachedDataReader(dataset, max_batch_size)
+    return data_reader.CachedDataReader(dataset, max_batch_size), num_examples
 
   else:
     # Version 2 using data_reader_alt.py (faster)
@@ -304,7 +305,7 @@ def load_mnist():
     dataset = (images, labels)
 
     # This version of CachedDataReader requires the dataset to NOT be shuffled
-    return data_reader_alt.CachedDataReader(dataset, num_examples)
+    return data_reader_alt.CachedDataReader(dataset, num_examples), num_examples
 
 
 def main(_):
