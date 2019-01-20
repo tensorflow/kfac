@@ -175,6 +175,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       ValueError: If momentum is non-zero and momentum_type is not 'regular'
           or 'adam'.
     """
+    self._layers = layer_collection
+
     self._colocate_gradients_with_ops = colocate_gradients_with_ops
 
     momentum_type = momentum_type.lower()
@@ -250,9 +252,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           variables=variables,
           cov_ema_decay=cov_ema_decay,
           damping=self._damping,
-          layer_collection=layer_collection,   # @tvikram: This used to be a
-                                               # lambda.  Was it needed for
-                                               # something?
+          layer_collection=lambda: self.layers,
           exps=(-1,),
           estimation_mode=estimation_mode,
           colocate_gradients_with_ops=self._colocate_gradients_with_ops,
@@ -277,7 +277,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
   @property
   def layers(self):
-    return self._fisher_est.layers
+    return self._layers
 
   @property
   def mat_type(self):
@@ -371,37 +371,68 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       raise ValueError("var_list doesn't match with set of Fisher-estimating "
                        "variables (i.e. those that were registered).")
 
-  def minimize(self, *args, **kwargs):
+  # We redefine this to do some checks, record the loss, and also change the
+  # default value of colocate_gradients_with_ops to True, and var_list
+  # to self.variables.
+  def minimize(self,
+               loss,
+               global_step=None,
+               var_list=None,
+               gate_gradients=tf.train.Optimizer.GATE_OP,
+               aggregation_method=None,
+               colocate_gradients_with_ops=True,
+               name=None,
+               grad_loss=None,
+               **kwargs):
     # This method has the same general arguments as the minimize methods in
     # standard optimizers do.
 
-    if self._loss is None:
-      self._loss = kwargs["loss"] if "loss" in kwargs else args[0]
+    if self._loss is None and loss is not None:
+      self._loss = loss
 
-    if kwargs.get("var_list"):
-      self.check_var_list(kwargs["var_list"])
+    if var_list is None:
+      var_list = self.variables
     else:
-      kwargs["var_list"] = self.variables
+      self.check_var_list(var_list)
 
-    return super(KfacOptimizer, self).minimize(*args, **kwargs)
+    return super(KfacOptimizer, self).minimize(
+        loss,
+        global_step=global_step,
+        var_list=var_list,
+        gate_gradients=gate_gradients,
+        aggregation_method=aggregation_method,
+        colocate_gradients_with_ops=colocate_gradients_with_ops,
+        name=name,
+        grad_loss=grad_loss,
+        **kwargs)
 
-  # We override this just so we can change the default value for some of the
-  # arguments, and also record the loss.
-  def compute_gradients(self, *args, **kwargs):
+  # We redefine this to do some checks, record the loss, and also change the
+  # default value of colocate_gradients_with_ops to True.
+  def compute_gradients(self,
+                        loss,
+                        var_list=None,
+                        gate_gradients=tf.train.Optimizer.GATE_OP,
+                        aggregation_method=None,
+                        colocate_gradients_with_ops=True,
+                        grad_loss=None,
+                        **kwargs):
+    # This method has the same general arguments as the minimize methods in
+    # standard optimizers do.
 
-    if self._loss is None:
-      self._loss = kwargs["loss"] if "loss" in kwargs else args[0]
+    if self._loss is None and loss is not None:
+      self._loss = loss
 
-    if kwargs.get("var_list"):
-      self.check_var_list(kwargs["var_list"])
+    if var_list is not None:
+      self.check_var_list(var_list)
 
-    # We want colocate_gradients_with_ops to be True by default
-    if ("colocate_gradients_with_ops" not in kwargs
-        or kwargs["colocate_gradients_with_ops"] is None):
-      kwargs["colocate_gradients_with_ops"] = True
-
-    return (super(tf.train.GradientDescentOptimizer, self)
-            .compute_gradients(*args, **kwargs))
+    return super(KfacOptimizer, self).compute_gradients(
+        loss=loss,
+        var_list=var_list,
+        gate_gradients=gate_gradients,
+        aggregation_method=aggregation_method,
+        colocate_gradients_with_ops=colocate_gradients_with_ops,
+        grad_loss=grad_loss,
+        **kwargs)
 
   def maybe_adapt_damping(self):
     """Maybe adapt the damping according to the built-in scheme.

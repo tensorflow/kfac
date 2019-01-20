@@ -85,7 +85,16 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
           "burnin_counter", dtype=tf.int64, shape=(), trainable=False,
           initializer=tf.zeros_initializer, use_resource=True)
 
-  def minimize(self, *args, **kwargs):
+  def minimize(self,
+               loss,
+               global_step=None,
+               var_list=None,
+               gate_gradients=tf.train.Optimizer.GATE_OP,
+               aggregation_method=None,
+               colocate_gradients_with_ops=True,
+               name=None,
+               grad_loss=None,
+               **kwargs):
     # This method has the same general arguments as the minimize methods in
     # standard optimizers do.
 
@@ -101,7 +110,16 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
       return tf.group(cov_update, burnin_counter_update)
 
     def super_minimize():
-      return super(PeriodicInvCovUpdateKfacOpt, self).minimize(*args, **kwargs)
+      return super(PeriodicInvCovUpdateKfacOpt, self).minimize(
+          loss,
+          global_step=global_step,
+          var_list=var_list,
+          gate_gradients=gate_gradients,
+          aggregation_method=aggregation_method,
+          colocate_gradients_with_ops=colocate_gradients_with_ops,
+          name=name,
+          grad_loss=grad_loss,
+          **kwargs)
 
     return tf.cond(self._burnin_counter < self._num_burnin_steps,
                    update_cov_and_burnin_counter, super_minimize)

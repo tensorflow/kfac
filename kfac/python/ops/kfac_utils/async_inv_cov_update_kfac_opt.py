@@ -80,21 +80,6 @@ class AsyncInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
   def _make_ops(self, update_thunks):
     return [thunk() for thunk in update_thunks]
 
-  def compute_gradients(self,
-                        loss,
-                        var_list=None,
-                        gate_gradients=tf.train.Optimizer.GATE_OP,
-                        aggregation_method=None,
-                        colocate_gradients_with_ops=True,
-                        grad_loss=None):
-    return super(AsyncInvCovUpdateKfacOpt, self).compute_gradients(
-        loss=loss,
-        var_list=var_list,
-        gate_gradients=gate_gradients,
-        aggregation_method=aggregation_method,
-        colocate_gradients_with_ops=colocate_gradients_with_ops,
-        grad_loss=grad_loss)
-
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
     cov_update_thunks, inv_update_thunks = self.make_vars_and_create_op_thunks()
     apply_grads = super(AsyncInvCovUpdateKfacOpt,
