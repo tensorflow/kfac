@@ -103,6 +103,18 @@ class SubGraphTest(tf.test.TestCase):
       self.assertEqual(2, sub_graph.variable_uses(var))
       self.assertEqual(1, sub_graph.variable_uses(resource_var))
 
+  def testVariableUsesRelayOps(self):
+    with tf.Graph().as_default():
+      a = tf.get_variable("a", shape=[2, 2])
+      b = tf.get_variable("b", shape=[2, 2])
+      ai = tf.identity(a)
+      c = tf.matmul(ai, b)
+      d = tf.matmul(ai, b)
+
+      sub_graph = utils.SubGraph((c, d))
+      self.assertEqual(2, sub_graph.variable_uses(a))
+      self.assertEqual(2, sub_graph.variable_uses(b))
+
 
 class UtilsTest(tf.test.TestCase):
 

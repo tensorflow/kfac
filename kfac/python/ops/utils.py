@@ -270,6 +270,20 @@ class SubGraph(object):
     Raises:
       ValueError: If 'var' is not a variable type.
     """
+    def _add_tensor_consumers_to_set(tensor, consumers_set):
+      """Finds consumers of a tensor and add them to the current consumers set.
+      """
+      for consumer in set(tensor.consumers()):
+        # These are the type of ops which relay a tensor to other ops without
+        # doing anything to the tensor value, so recursively find the actual
+        # consumers.
+        if consumer.type in [
+            "Identity", "ReadVariableOp", "Enter", "ResourceGather"]:
+          for output in consumer.outputs:
+            _add_tensor_consumers_to_set(output, consumers_set)
+        else:
+          consumers_set.add(consumer)
+
     if isinstance(var, resource_variable_ops.ResourceVariable):
       var = var.handle
     elif isinstance(var, tf.Variable):
@@ -277,7 +291,9 @@ class SubGraph(object):
     else:
       raise ValueError("%s does not appear to be a variable." % str(var))
 
-    return len(self._members.intersection(set(var.consumers())))
+    consumers = set()
+    _add_tensor_consumers_to_set(var, consumers)
+    return len(self._members.intersection(consumers))
 
   def filter_list(self, node_list):
     """Filters 'node_list' to nodes in this subgraph."""
