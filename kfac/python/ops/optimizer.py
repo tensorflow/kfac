@@ -1053,8 +1053,25 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
 
 def _two_by_two_solve(m, vec):
-  # it might be better just to crank out the exact formula for 2x2 inverses
-  return tf.matmul(tf.matrix_inverse(m), vec)
+  """Invert a 2x2 matrix.
+
+  Args:
+    m: A length 2 list of length 2 lists, is a 2x2 matrix of [[a, b], [c, d]].
+    vec: The length 2 list of length 1 lists, a vector of [e, f].
+
+  Returns:
+    matmul(m^{-1}, vec).
+  """
+  a = m[0][0]
+  b = m[0][1]
+  c = m[1][0]
+  d = m[1][1]
+  inv_m_det = 1.0 / (a * d - b * c)
+  m_inverse = [
+      [d * inv_m_det, -b * inv_m_det],
+      [-c * inv_m_det, a * inv_m_det]
+  ]
+  return tf.matmul(m_inverse, vec)
 
 
 def _eval_quadratic_no_c(m, vec):
