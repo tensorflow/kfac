@@ -601,7 +601,8 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
                strides,
                padding,
                data_format=None,
-               dilations=None):
+               dilations=None,
+               patch_mask=None):
     """Creates a ConvDiagonalFB block.
 
     Args:
@@ -615,6 +616,10 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
       padding: The padding in this layer (e.g. "SAME").
       data_format: str or None. Format of input data.
       dilations: List of 4 ints or None. Rate for dilation along all dimensions.
+      patch_mask: Tensor of shape [kernel_height, kernel_width, in_channels]
+        or None. If not None this is multiplied against the extracted patches
+        Tensor (broadcasting along the batch dimension) before statistics are
+        computed. (Default: None)
 
     Raises:
       ValueError: if strides is not length-4.
@@ -647,6 +652,8 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
           "Convolution filter must be of shape"
           " [filter_height, filter_width, in_channels, out_channels].")
 
+    self._patch_mask = patch_mask
+
     super(ConvDiagonalFB, self).__init__(layer_collection)
 
   @property
@@ -665,7 +672,7 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
     self._factor = self._layer_collection.make_or_get_factor(
         self._factor_implementation,
         (inputs, grads_list, self._filter_shape, self._strides, self._padding,
-         self._data_format, self._dilations, self._has_bias))
+         self._data_format, self._dilations, self._has_bias, self._patch_mask))
 
     def damping_func():
       return self._num_locations * normalize_damping(damping,
@@ -909,7 +916,8 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
                extract_patches_fn=None,
                sub_sample_inputs=None,
                sub_sample_patches=None,
-               use_sua_approx_for_input_factor=False):
+               use_sua_approx_for_input_factor=False,
+               patch_mask=None):
     """Creates a ConvKFCBasicFB block.
 
     Args:
@@ -935,8 +943,12 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
       sub_sample_patches: `bool`, If `True` then subsample the extracted
         patches. (Default: None)
       use_sua_approx_for_input_factor: `bool`, If `True` then use
-      `ConvInputSUAKroneckerFactor` for input factor. Otherwise use
-      `ConvInputKroneckerFactor`.  (Default: None)
+        `ConvInputSUAKroneckerFactor` for input factor. Otherwise use
+        `ConvInputKroneckerFactor`. (Default: None)
+      patch_mask: Tensor of shape [kernel_height, kernel_width, in_channels]
+        or None. If not None this is multiplied against the extracted patches
+        Tensor (broadcasting along the batch dimension) before statistics are
+        computed in the input factor. (Default: None)
     """
     self._padding = padding
     self._strides = maybe_tuple(strides)
@@ -951,6 +963,7 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
 
     self._sub_sample_inputs = sub_sample_inputs
     self._sub_sample_patches = sub_sample_patches
+    self._patch_mask = patch_mask
 
     super(ConvKFCBasicFB, self).__init__(layer_collection)
 
@@ -972,7 +985,8 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
           fisher_factors.ConvInputKroneckerFactor,
           (inputs, self._filter_shape, self._padding, self._strides,
            self._dilation_rate, self._data_format, self._extract_patches_fn,
-           self._has_bias, self._sub_sample_inputs, self._sub_sample_patches))
+           self._has_bias, self._sub_sample_inputs, self._sub_sample_patches,
+           self._patch_mask))
 
     self._output_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvOutputKroneckerFactor, (grads_list,))

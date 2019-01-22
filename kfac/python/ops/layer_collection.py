@@ -768,7 +768,8 @@ class LayerCollection(object):
                       approx=None,
                       reuse=VARIABLE_SCOPE,
                       sub_sample_inputs=None,
-                      sub_sample_patches=None):
+                      sub_sample_patches=None,
+                      patch_mask=None):
     """Registers a call to tf.nn.conv2d().
 
     Args:
@@ -796,7 +797,13 @@ class LayerCollection(object):
         the image patches are extracted. (Default: None)
       sub_sample_patches: `bool`, If `True` then subsample the extracted
         patches. (Default: None)
-
+      patch_mask: Tensor of shape [kernel_height, kernel_width, in_channels]
+        or None. If not None this is multiplied against the extracted patches
+        Tensor (broadcasting along the batch dimension) before statistics are
+        computed. This can (and probably should) be used if the filter bank
+        matrix is masked in a way that is homogenous across the output channels.
+        (Other masking patterns have no direct support.) Currently only works
+        with the approx="kron" or "diagonal". (Default: None)
     Raises:
       ValueError: For improper value to 'approx'.
       KeyError: If reuse == True but no FisherBlock found for 'params'.
@@ -824,7 +831,8 @@ class LayerCollection(object):
               extract_patches_fn="extract_image_patches",
               sub_sample_inputs=sub_sample_inputs,
               sub_sample_patches=sub_sample_patches,
-              use_sua_approx_for_input_factor=False),
+              use_sua_approx_for_input_factor=False,
+              patch_mask=patch_mask),
           reuse=reuse)
     elif approx == APPROX_DIAGONAL_NAME:
       assert strides[0] == strides[-1] == 1
@@ -836,7 +844,8 @@ class LayerCollection(object):
               padding=padding,
               strides=strides,
               dilations=dilations,
-              data_format=data_format),
+              data_format=data_format,
+              patch_mask=patch_mask),
           reuse=reuse)
     elif approx == APPROX_KRONECKER_SUA_NAME:
       block = self.register_block(
@@ -1548,6 +1557,9 @@ class LayerCollection(object):
     Returns:
       Instance of 'cls' found in self.fisher_factors.
     """
+    # TODO(b/123190346): Should probably change the args list to be keyworded
+    # instead of positional.  Note that this would require making changes in
+    # each FisherBlock's call to make_or_get_factor.
     try:
       hash(args)
     except TypeError:

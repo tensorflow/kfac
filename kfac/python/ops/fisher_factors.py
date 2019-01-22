@@ -1222,7 +1222,8 @@ class ConvDiagonalFactor(DiagonalFactor):
                padding,
                data_format=None,
                dilations=None,
-               has_bias=False):
+               has_bias=False,
+               patch_mask=None):
     """Creates a ConvDiagonalFactor object.
 
     Args:
@@ -1240,6 +1241,10 @@ class ConvDiagonalFactor(DiagonalFactor):
       dilations: None or tuple of 4 ints.
       has_bias: Python bool. If True, the layer is assumed to have a bias
         parameter in addition to its filter parameter.
+      patch_mask: Tensor of shape [kernel_height, kernel_width, in_channels]
+        or None. If not None this is multiplied against the extracted patches
+        Tensor (broadcasting along the batch dimension) before statistics are
+        computed. (Default: None)
 
     Raises:
       ValueError: If inputs, output_grads, and filter_shape do not agree on
@@ -1274,6 +1279,8 @@ class ConvDiagonalFactor(DiagonalFactor):
     self._dilations = dilations
     self._has_bias = has_bias
     self._patches = None
+
+    self._patch_mask = patch_mask
 
     super(ConvDiagonalFactor, self).__init__()
 
@@ -1321,6 +1328,11 @@ class ConvDiagonalFactor(DiagonalFactor):
             strides=self._strides,
             rates=rates,
             padding=self._padding)
+
+        if self._patch_mask is not None:
+          assert self._patch_mask.shape == self._filter_shape[0:-1]
+          # This should work as intended due to broadcasting.
+          patches *= self._patch_mask
 
         if self._has_bias:
           patches = append_homog(patches)
@@ -1424,7 +1436,8 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
                extract_patches_fn=None,
                has_bias=False,
                sub_sample_inputs=None,
-               sub_sample_patches=None):
+               sub_sample_patches=None,
+               patch_mask=None):
     """Initializes ConvInputKroneckerFactor.
 
     Args:
@@ -1448,6 +1461,10 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
         the image patches are extracted. (Default: None)
       sub_sample_patches: `bool`, If `True` then subsample the extracted
         patches. (Default: None)
+      patch_mask: Tensor of shape [kernel_height, kernel_width, in_channels]
+        or None. If not None this is multiplied against the extracted patches
+        Tensor (broadcasting along the batch dimension) before statistics are
+        computed. (Default: None)
     """
     self._inputs = inputs
     self._filter_shape = filter_shape
@@ -1466,6 +1483,8 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
       self._sub_sample_patches = _SUB_SAMPLE_PATCHES
     else:
       self._sub_sample_patches = sub_sample_patches
+
+    self._patch_mask = patch_mask
 
     super(ConvInputKroneckerFactor, self).__init__()
 
@@ -1544,6 +1563,11 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
 
     else:
       raise NotImplementedError(self._extract_patches_fn)
+
+    if self._patch_mask is not None:
+      assert self._patch_mask.shape == self._filter_shape[0:-1]
+      # This should work as intended due to broadcasting.
+      patches *= self._patch_mask
 
     flatten_size = np.prod(self._filter_shape[0:-1])
     # patches_flat below is the matrix [[A_l]] from the KFC paper (tilde
