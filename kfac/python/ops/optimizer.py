@@ -604,7 +604,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           applied to.
 
     Returns:
-      List of previous updates applied to the `variables`.
+      List of (previous update, variable) pairs where the previous updates
+      have been applied to the `variables`.
     """
     # This feels like a hack.  What if learnings_rate changes over iterations?
     # Also, what guarantee do we have that this is the old value and not the
@@ -613,26 +614,34 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # TODO(b/121245468): Figure out if this is a problem and if not explain why
     # Or fix it by somehow forcing the slots to use resource variables instead.
 
-    return sprod(-1. * self._learning_rate,
-                 tuple(self._zeros_slot(var, "velocity", self.get_name())
-                       for var in variables))
+    prev_updates = sprod(
+        -1. * self._learning_rate,
+        tuple(self._zeros_slot(var, "velocity", self.get_name())
+              for var in variables))
+    return zip(prev_updates, variables)
 
-  def _compute_qmodel(self, updates, prev_updates, grads, variables):
+  def _compute_qmodel(self,
+                      raw_updates_and_vars,
+                      prev_updates_and_vars,
+                      grads_and_vars):
     """Computes the 2 dimensional version of the (exact) quadratic model.
 
        The two dimesions are the update and the previous update vectors.
 
+       The arguments are all lists of (Tensor, Variable) pairs where the
+       variables are the same and in the same order.
+
     Args:
-      updates: a list of Tensors. Raw update proposal to apply to the
-        variables (before scaling by learning rate and addition of
+      raw_updates_and_vars: a list of (precond grad, variable) pairs. Raw update
+        proposal to apply to the variables (before scaling by learning rate and
+        addition of velocity/momentum).
+      prev_updates_and_vars: a list of (previos update, variable) pairs.
+        Previous update applied to the variables (includes learning rate and
         velocity/momentum).
-      prev_updates: a list of Tensors.  Previous update applied to the
-        variables (includes learning rate and velocity/momentum).
-      grads: a list of Tensors. Gradients for the parameters.
-      variables: a list of Variables. The variables that the updates are
-        being applied to. The order of this list must correspond to the order
-        of the other arguments. (Note that this function doesn't actually apply
-        the update.)
+      grads_and_vars: a list of (gradient, variable) pairs. Gradients for the
+        parameters and the variables that the updates are being applied to. The
+        order of this list must correspond to the order of the other arguments.
+        (Note that this function doesn't actually apply the update.)
 
     Returns:
       m, c, and d. m is the 2 by 2 matrix representing the quadratic term,
@@ -640,6 +649,21 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       matrix representing only the contribution of the damping to the quadratic
       term. These are all multi-dimensional lists (lists of lists) of Tensors.
     """
+
+    # Raw update proposal to apply to the variables (before scaling by learning
+    # rate and addition of velocity/momentum).
+    raw_updates, _ = zip(*raw_updates_and_vars)
+    prev_updates, _ = zip(*prev_updates_and_vars)
+    grads, variables = zip(*grads_and_vars)
+
+    utils.assert_variables_match_pairs_list(
+        raw_updates_and_vars, prev_updates_and_vars,
+        error_message="_compute_qmodel raw_updates_and_vars and "
+        "prev_updates_and_vars differ.")
+    utils.assert_variables_match_pairs_list(
+        prev_updates_and_vars, grads_and_vars,
+        error_message="_compute_qmodel prev_updates_and_vars and "
+        "grads_and_vars differ.")
 
     cmvpc = cmvp.CurvatureMatrixVectorProductComputer(
         self.layers,
@@ -649,16 +673,16 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # Compute the matrix-vector products with the transposed Fisher factor
     # (or GGN factor)
     if self.mat_type == "Fisher":
-      mft_updates = cmvpc.multiply_fisher_factor_transpose(updates)
+      mft_updates = cmvpc.multiply_fisher_factor_transpose(raw_updates)
       mft_prev_updates = cmvpc.multiply_fisher_factor_transpose(prev_updates)
     elif self.mat_type == "GGN":
-      mft_updates = cmvpc.multiply_ggn_factor_transpose(updates)
+      mft_updates = cmvpc.multiply_ggn_factor_transpose(raw_updates)
       mft_prev_updates = cmvpc.multiply_ggn_factor_transpose(prev_updates)
 
     batch_size = tf.cast(self._batch_size, dtype=mft_updates[0].dtype)
 
-    b_11 = self.damping * ip(updates, updates)
-    b_21 = self.damping * ip(prev_updates, updates)
+    b_11 = self.damping * ip(raw_updates, raw_updates)
+    b_21 = self.damping * ip(prev_updates, raw_updates)
     b_22 = self.damping * ip(prev_updates, prev_updates)
     b = [[b_11, b_21], [b_21, b_22]]
 
@@ -669,15 +693,15 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
             / batch_size)
     m = [[m_11 + b_11, m_21 + b_21], [m_21 + b_21, m_22 + b_22]]
 
-    c_1 = ip(grads, updates)
+    c_1 = ip(grads, raw_updates)
     c_2 = ip(grads, prev_updates)
 
     c = [[c_1], [c_2]]
 
     return m, c, b
 
-  def _compute_qmodel_hyperparams(self, updates, prev_updates, grads,
-                                  variables, fixed_mu=None):
+  def _compute_qmodel_hyperparams(self, grads_and_vars, precon_grads_and_vars,
+                                  prev_updates_and_vars, fixed_mu=None):
     """Compute optimal update hyperparameters from the quadratic model.
 
     More specifically, if L is the loss we minimize a quadratic approximation
@@ -702,19 +726,14 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     be in correspondence with each other.
 
     Args:
-      updates: a list of Tensors. Raw update proposal to apply to the
-        variables (before scaling by learning rate and addition of
+      grads_and_vars: List of (gradient, variable) pairs.
+      precon_grads_and_vars: List of (preconditioned gradients, variable)
+        pairs.
+      prev_updates_and_vars: a list of (previous update, variable) pairs.
+        Previous update applied to the variables (includes learning rate and
         velocity/momentum).
-      prev_updates: a list of Tensors.  Previous update applied to the
-        variables (includes learning rate and velocity/momentum).
-      grads: a list of Tensors. Gradients for the parameters.
-      variables: a list of Variables. The variables that the updates are
-        being applied to. The order of this list must correspond to the order
-        of the other arguments. (Note that this function doesn't actually apply
-        the update.)
       fixed_mu: A fixed value of mu to use instead of the optimal one.
         (Default: None)
-
     Returns:
       (alpha, mu, qmodel_change), where alpha and mu are chosen to optimize the
       quadratic model, and
@@ -733,7 +752,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         the quadratic model, and
         qmodel_change = qmodel(alpha*precon_grad + mu*prev_update) - qmodel(0).
       """
-      m, c, b = self._compute_qmodel(updates, prev_updates, grads, variables)
+      m, c, b = self._compute_qmodel(
+          precon_grads_and_vars, prev_updates_and_vars, grads_and_vars)
 
       if fixed_mu is None:
         sol = -1. * _two_by_two_solve(m, c)
@@ -774,7 +794,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         quadratic model, and
         qmodel_change = qmodel(alpha*precon_grad) - qmodel(0)
       """
-      m, c, b = self._compute_qmodel(updates, prev_updates, grads, variables)
+      m, c, b = self._compute_qmodel(
+          precon_grads_and_vars, prev_updates_and_vars, grads_and_vars)
 
       m = m[0][0]
       c = c[0][0]
@@ -796,43 +817,13 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
       return alpha, mu, qmodel_change
 
-    prev_update_squared_norm = ip(prev_updates, prev_updates)
+    prev_update_squared_norm = ip_p(
+        prev_updates_and_vars, prev_updates_and_vars)
 
     return tf.cond(
         tf.equal(prev_update_squared_norm, 0.0),
         zero_prevupd_case,
         non_zero_prevupd_case)
-
-  def _compute_qmodel_hyperparams_wrapper(self,
-                                          grads_and_vars,
-                                          precon_grads_and_vars,
-                                          fixed_mu=None):
-    """Wrapper function for `self._compute_qmodel_hyperparams`.
-
-    Constructs a list of preconditioned gradients and variables.
-
-    Args:
-      grads_and_vars: List of (gradient, variable) pairs.
-      precon_grads_and_vars: List of (preconditioned gradients, variable)
-        pairs.
-      fixed_mu: A fixed value of mu to use instead of the optimal one.
-        (Default: None)
-
-    Returns:
-      (alpha, mu), where alpha and mu are chosen to optimize
-      the quadratic model.
-    """
-    precon_grads = list(
-        precon_grad for (precon_grad, _) in precon_grads_and_vars)
-    grads = list(grad for (grad, _) in grads_and_vars)
-    variables = list(var for (_, var) in grads_and_vars)
-    prev_updates = self._compute_prev_updates(variables)
-
-    return self._compute_qmodel_hyperparams(precon_grads,
-                                            prev_updates,
-                                            grads,
-                                            variables,
-                                            fixed_mu=fixed_mu)
 
   def _compute_approx_qmodel_change(self, updates_and_vars, grads_and_vars):
     """Computes the change in the approximate quadratic model.
@@ -973,8 +964,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       # Compute optimal velocity update parameters according to quadratic model
       # Note that this method relies on hacky and potentially broken method
       # _compute_prev_updates().
-      alpha, mu, qmodel_change = self._compute_qmodel_hyperparams_wrapper(
-          grads_and_vars, precon_grads_and_vars, fixed_mu=fixed_mu)
+      prev_updates_and_vars = self._compute_prev_updates(grads_and_vars)
+      alpha, mu, qmodel_change = self._compute_qmodel_hyperparams(
+          grads_and_vars, precon_grads_and_vars, prev_updates_and_vars,
+          fixed_mu=fixed_mu)
 
       qmodel_assign_op = tf.group(tf.assign(self._qmodel_change, qmodel_change),
                                   tf.assign(self._qmodel_learning_rate, -alpha),

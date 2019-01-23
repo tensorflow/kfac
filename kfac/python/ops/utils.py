@@ -891,3 +891,34 @@ def ip_p(list1, list2):
 
   return ip(tuple(tensor for (tensor, _) in list1),
             tuple(tensor for (tensor, _) in list2))
+
+
+def assert_variables_match_pairs_list(a_and_vars,
+                                      b_and_vars,
+                                      error_message=None):
+  """Assert the variables in two lists of (tensor, var) pairs are the same.
+
+  Args:
+    a_and_vars: a list of (tensor, variable) pairs.
+    b_and_vars: a list of (tensor, variable) pairs.
+    error_message: an optional string prepended to the error message.
+
+  Raises:
+    ValueError: if any variables in the input pair lists are not the same.
+  """
+  _, a_variables = zip(*a_and_vars)
+  _, b_variables = zip(*b_and_vars)
+  variable_mismatch_indices = []
+  for vi, (a_var, b_var) in zip(a_variables, b_variables):
+    if a_var is not b_var:
+      variable_mismatch_indices.append(vi)
+
+  if variable_mismatch_indices:
+    mismatch_indices_str = ", ".join(map(str, variable_mismatch_indices))
+    a_variables_str = ", ".join(map(str, a_variables))
+    b_variables_str = ", ".join(map(str, b_variables))
+    error_str = "Mismatch on variable lists at indices {}.\n{}\n{}".format(
+        mismatch_indices_str, a_variables_str, b_variables_str)
+    if error_message:
+      error_str = "{} {}".format(error_message, error_str)
+    raise ValueError(error_str)
