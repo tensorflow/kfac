@@ -95,11 +95,8 @@ class FisherEstimator(object):
         registered in layer_collection (if it is not None).
       cov_ema_decay: The decay factor used when calculating the covariance
         estimate moving averages.
-      damping: float or 0D Tensor. The damping factor used to stabilize training
-        due to errors in the local approximation with the Fisher information
-        matrix, and to regularize the update direction by making it closer to
-        the gradient. (Higher damping means the update looks more like a
-        standard gradient update - see Tikhonov regularization.)
+      damping: float or 0D Tensor. This quantity times the identity matrix is
+          (approximately) added to the matrix being estimated.
       layer_collection: Either layer collection object or a function which
         returns an instance to `LayerCollection` object, which holds for the
         Fisher blocks, Kronecker factors, and losses associated with the

@@ -81,18 +81,24 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
 
     Args:
-      learning_rate: The base learning rate for the optimizer.  Should probably
-          be set to 1.0 when using momentum_type = 'qmodel'/'qmodel_fixedmu',
-          but can still be set to a different value if desired (effectively
-          applying the learning rate on top of whatever update the qmodel
-          approach computes).
-      damping: The damping factor used to stabilize training due to errors in
-          the local approximation with the Fisher information matrix, and to
-          regularize the update direction by making it closer to the gradient.
-          If damping is adapted during training then this value is used for
-          initializing damping variable.
-          (Higher damping means the update looks more like a standard gradient
-          update - see Tikhonov regularization.)
+      learning_rate: float or 0D Tensor. The base learning rate for the
+          optimizer.  Should probably be set to 1.0 when using momentum_type =
+          'qmodel'/'qmodel_fixedmu', but can still be set to a different value
+          if desired (effectively applying the learning rate on top of whatever
+          update the qmodel approach computes).
+      damping: float or 0D Tensor. This quantity times the identity matrix is
+          (approximately) added to the curvature matrix (i.e. the Fisher or GGN)
+          before it is inverted multiplied by the gradient when computing the
+          (raw) update. This quantity should match the scale of the objective,
+          so that if you put a multiplier on your loss you should apply the
+          same multiplier to the damping. Roughly speaking, larger values
+          constrain the update vector to a smaller region around zero, which
+          we want to do when our local quadratic model is a less trustworthy
+          local approximation of the true objective.  The damping value is
+          closely related to the trust region radius and to the classical
+          Tikhonov regularization method. If the `adapt_damping` argument is
+          True then this value is used only as an initial value for the
+          adaptation method.
       layer_collection: The layer collection object, which holds the Fisher
           blocks, Kronecker factors, and losses associated with the
           graph.  The layer_collection cannot be modified after KfacOptimizer's
@@ -107,8 +113,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           'regular', 'adam', or 'qmodel'. (Default: 'regular')
       norm_constraint: float or Tensor. If specified, the update is scaled down
           so that its approximate squared Fisher norm v^T F v is at most the
-          specified value. May only be used with momentum type 'regular'.
-          (Default: None)
+          specified value. May only be used with momentum type 'regular'.  See
+          the docstring for the method _clip_updates() for a more detailed
+          explanation of this feature. (Default: None)
       name: The name for this optimizer. (Default: 'KFAC')
       estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
           'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
@@ -964,7 +971,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       # Compute optimal velocity update parameters according to quadratic model
       # Note that this method relies on hacky and potentially broken method
       # _compute_prev_updates().
-      prev_updates_and_vars = self._compute_prev_updates(grads_and_vars)
+      prev_updates_and_vars = self._compute_prev_updates(
+          tuple(var for (_, var) in grads_and_vars))
       alpha, mu, qmodel_change = self._compute_qmodel_hyperparams(
           grads_and_vars, precon_grads_and_vars, prev_updates_and_vars,
           fixed_mu=fixed_mu)
@@ -1046,7 +1054,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
 
 def _two_by_two_solve(m, vec):
-  """Invert a 2x2 matrix.
+  """Solve a 2x2 system by direct inversion.
 
   Args:
     m: A length 2 list of length 2 lists, is a 2x2 matrix of [[a, b], [c, d]].

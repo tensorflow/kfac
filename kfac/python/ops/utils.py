@@ -909,7 +909,7 @@ def assert_variables_match_pairs_list(a_and_vars,
   _, a_variables = zip(*a_and_vars)
   _, b_variables = zip(*b_and_vars)
   variable_mismatch_indices = []
-  for vi, (a_var, b_var) in zip(a_variables, b_variables):
+  for vi, (a_var, b_var) in enumerate(zip(a_variables, b_variables)):
     if a_var is not b_var:
       variable_mismatch_indices.append(vi)
 
