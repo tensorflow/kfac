@@ -53,7 +53,7 @@ class ConvNetTest(tf.test.TestCase):
 
   def testLinearLayer(self):
     with tf.Graph().as_default():
-      act, (w, b) = convnet.linear_layer(
+      pre, act, (w, b) = convnet.fc_layer(
           layer_id=1, inputs=tf.zeros([5, 20]), output_size=5)
       self.assertShapeEqual(np.zeros([5, 5]), act)
       self.assertShapeEqual(np.zeros([20, 5]), tf.convert_to_tensor(w))

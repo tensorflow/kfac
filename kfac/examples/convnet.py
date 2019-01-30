@@ -30,7 +30,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
 # Dependency imports
 import kfac
 import numpy as np
@@ -43,7 +42,6 @@ __all__ = [
     "conv_layer",
     "fc_layer",
     "max_pool_layer",
-    "linear_layer",
     "build_model",
     "minimize_loss_single_machine",
     "distributed_grads_only_and_ops_chief_worker",
@@ -150,25 +148,6 @@ def max_pool_layer(layer_id, inputs, kernel_size, stride):
         name="pool")
 
 
-def linear_layer(layer_id, inputs, output_size):
-  """Builds the final linear layer for an MNIST classification problem.
-
-  Args:
-    layer_id: int. Integer ID for this layer's variables.
-    inputs: Tensor of shape [num_examples, width, height, in_channels]. Each row
-      corresponds to a single example.
-    output_size: int. Number of output dims per example.
-
-  Returns:
-    activations: Tensor of shape [num_examples, output_size]. Values of the
-      layer immediately after the activation function.
-    params: Tuple of (weights, bias), parameters for this layer.
-  """
-  # TODO(b/67004004): Delete this function and rely on tf.layers exclusively.
-  pre, _, params = fc_layer(layer_id, inputs, output_size)
-  return pre, params
-
-
 def build_model(examples,
                 labels,
                 num_labels,
@@ -200,7 +179,7 @@ def build_model(examples,
       layer_id=2, inputs=act1, kernel_size=5, out_channels=16)
   act3 = max_pool_layer(layer_id=3, inputs=act2, kernel_size=3, stride=2)
   flat_act3 = tf.reshape(act3, shape=[-1, int(np.prod(act3.shape[1:4]))])
-  logits, params4 = linear_layer(
+  logits, _, params4 = fc_layer(
       layer_id=4, inputs=flat_act3, output_size=num_labels)
   loss = tf.reduce_mean(
       tf.nn.sparse_softmax_cross_entropy_with_logits(
