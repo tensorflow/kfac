@@ -263,23 +263,28 @@ def load_mnist():
     return data_reader_alt.CachedDataReader(dataset, num_examples), num_examples
 
 
-def main(_):
-  # Load dataset.
-  cached_reader, num_examples = load_mnist()
-
+def _get_batch_size_schedule(num_examples):
+  """Returns training batch size schedule."""
   minibatch_maxsize_targetiter = 500
   minibatch_maxsize = num_examples
   minibatch_startsize = 1000
 
   div = (float(minibatch_maxsize_targetiter-1)
          / math.log(float(minibatch_maxsize)/minibatch_startsize, 2))
-  batch_size_schedule = [
+  return [
       min(int(2.**(float(k)/div) * minibatch_startsize), minibatch_maxsize)
       for k in range(500)
   ]
 
+
+def construct_train_quants():
+  """Returns tensors and optimizer required to run the autoencoder."""
+  # Load dataset.
+  cached_reader, num_examples = load_mnist()
+  batch_size_schedule = _get_batch_size_schedule(num_examples)
   batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
 
+  minibatch = cached_reader(batch_size)
   training_model = AutoEncoder(784)
   layer_collection = kfac.LayerCollection()
 
@@ -293,11 +298,8 @@ def main(_):
         layer_collection=layer_collection,
         return_acc=return_acc)
 
-  minibatch = cached_reader(batch_size)
-  batch_loss, batch_error = loss_fn(minibatch,
-                                    layer_collection=layer_collection,
-                                    return_acc=True)
-
+  (batch_loss, batch_error) = loss_fn(
+      minibatch, layer_collection=layer_collection, return_acc=True)
   # Make training op
   with tf.device(FLAGS.device):
     train_op, opt = make_train_op(
@@ -306,6 +308,13 @@ def main(_):
         layer_collection,
         loss_fn=loss_fn,
         cached_reader=cached_reader)
+
+  return train_op, opt, batch_loss, batch_error, batch_size_schedule, batch_size
+
+
+def main(_):
+  (train_op, opt, batch_loss, batch_error, batch_size_schedule,
+   batch_size) = construct_train_quants()
 
   learning_rate = opt.learning_rate
   momentum = opt.momentum
@@ -359,5 +368,3 @@ def main(_):
 
 if __name__ == '__main__':
   tf.app.run(main)
-
-
