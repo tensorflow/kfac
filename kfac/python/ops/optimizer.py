@@ -128,9 +128,16 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       batch_size: The size of the mini-batch. Only needed when `momentum_type`
           == 'qmodel', when automatic adjustment is used, or when
           `compute_params_stats` is True. (Default: None)
-      placement_strategy: string, Device placement strategy used when creating
-        covariance variables, covariance ops, and inverse ops.
-        (Default: `None`)
+      placement_strategy: string or None. Device placement strategy used when
+        creating variables, and various ops. Can be None, 'round_robin', or
+        'tpu_round_robin'. 'round_robin' supports round-robin placement of
+        various ops on lists of provided devices. 'tpu_round_robin' does
+        something similar but over shards/replicas instead, and only works
+        in certain TPU contexts (e.g. TPUEstimator).  The details of the
+        different placement strategies are controlled by additional keyword
+        arguments that can be passed to this class, and which are described
+        in the different placement mixin classes in placement.py.
+        (Default: None)
       num_steps_per_cov_update: int, The updates to the covariance estimates
         are accumulated for `num_steps_per_cov_update` steps before being
         applied (using a decayed average). This is useful when accumulating
@@ -277,6 +284,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
   def get_inv_vars(self):
     """Returns all inverse computation related varaiables."""
     return self._fisher_est.get_inv_vars()
+
+  @property
+  def factors(self):
+    return self._fisher_est.factors
 
   @property
   def variables(self):

@@ -55,6 +55,8 @@ def make_fisher_estimator(placement_strategy=None, **kwargs):
   """
   if placement_strategy in [None, "round_robin"]:
     return FisherEstimatorRoundRobin(**kwargs)
+  elif placement_strategy == "tpu_round_robin":
+    return FisherEstimatorTPURoundRobin(**kwargs)
   else:
     raise ValueError(
         "Unimplemented vars and ops placement strategy : {}".format(
@@ -233,7 +235,7 @@ class FisherEstimator(object):
     return self._params_stats
 
   @abc.abstractmethod
-  def _place_and_compute_tranformation_thunks(self, thunks):
+  def _place_and_compute_transformation_thunks(self, thunks, params_list):
     """Computes transformation thunks with device placement.
 
     Device placement will be determined by the strategy asked for when this
@@ -242,6 +244,8 @@ class FisherEstimator(object):
     Args:
       thunks: A list of thunks to run. Must be in one to one correspondence
         with the `blocks` property.
+      params_list: A list of the corresponding parameters. Must be in one to one
+        correspondence with the `blocks` property.
 
     Returns:
       A list (in the same order) of the the return results of the thunks,
@@ -271,7 +275,10 @@ class FisherEstimator(object):
     thunks = tuple(make_thunk(fb, params)
                    for params, fb in self.layers.fisher_blocks.items())
 
-    results = self._place_and_compute_tranformation_thunks(thunks)
+    params_list = tuple(params
+                        for params, _ in self.layers.fisher_blocks.items())
+
+    results = self._place_and_compute_transformation_thunks(thunks, params_list)
 
     trans_vecs = utils.SequenceDict()
     for params, result in zip(self.layers.fisher_blocks, results):
@@ -671,5 +678,11 @@ class FisherEstimator(object):
 
 class FisherEstimatorRoundRobin(placement.RoundRobinPlacementMixin,
                                 FisherEstimator):
-  """Fisher estimator which provides round robin device placement strategy."""
+  """FisherEstimator which provides round robin device placement strategy."""
+  pass
+
+
+class FisherEstimatorTPURoundRobin(placement.TPURoundRobinPlacementMixin,
+                                   FisherEstimator):
+  """FisherEstimator which provides round robin sharding strategy."""
   pass

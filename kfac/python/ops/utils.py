@@ -22,6 +22,7 @@ from __future__ import print_function
 import numpy as np
 import tensorflow as tf
 
+from tensorflow.contrib.tpu.python.ops import tpu_ops
 from tensorflow.contrib.tpu.python.tpu import tpu_function
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.training import moving_averages
@@ -343,6 +344,10 @@ def on_tpu():
   return tpu_function.get_tpu_context().number_of_shards is not None
 
 
+def get_num_tpu_shards():
+  return tpu_function.get_tpu_context().number_of_shards
+
+
 def cross_replica_mean(tensor, name=None):
   """Takes mean value of a Tensor across all TPU cores.
 
@@ -357,13 +362,54 @@ def cross_replica_mean(tensor, name=None):
     ValueError: If called outside of TPU context.
   """
   with tf.name_scope(name, "cross_replica_mean", [tensor]):
-    num_shards = tpu_function.get_tpu_context().number_of_shards
+    num_shards = get_num_tpu_shards()
     if num_shards is None:
       raise ValueError(
           "Cannot take cross_replica_mean() outside of TPU Context.")
     if num_shards == 1:
       return tensor
     return tf.contrib.tpu.cross_replica_sum(tensor / num_shards)
+
+
+def cross_replica_sum(tensor, name=None):
+  """Takes sum of values of a Tensor across all TPU cores.
+
+  Args:
+    tensor: Tensor to be synchronized.
+    name: None or string. Name of Op.
+
+  Returns:
+    Sum of Tensor across all TPU cores.
+
+  Raises:
+    ValueError: If called outside of TPU context.
+  """
+  with tf.name_scope(name, "cross_replica_sum", [tensor]):
+    num_shards = get_num_tpu_shards()
+    if num_shards is None:
+      raise ValueError(
+          "Cannot take cross_replica_sum() outside of TPU Context.")
+    if num_shards == 1:
+      return tensor
+    return tf.contrib.tpu.cross_replica_sum(tensor)
+
+
+def get_replica_id():
+  """Returns an id number for the current replica, counting from 0."""
+  # This code is based on TensorTracer._add_replica_id_to_graph().
+
+  # I'm assuming replicas and shards are always equal until someone tells me
+  # different.
+  num_replicas = get_num_tpu_shards()
+
+  if not num_replicas:
+    return None
+
+  with tf.control_dependencies(None):
+    # Uses None as dependency to run outside of TPU graph rewrites.
+    return tpu_ops.tpu_replicated_input(
+        list(range(num_replicas)),
+        name="replica_id")
 
 
 def ensure_sequence(obj):
@@ -745,9 +791,13 @@ class AccumulatorVariable(object):
         # These moving averages use "slots" internally, which aren't implemented
         # with resource variables. Thus I don't trust them.
         # TODO(b/121265708): Someone should look into this!
-        return tf.group(
-            moving_averages.assign_moving_average(
-                self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
+
+        # I'm adding this scope to try to force the use of resource variables
+        # by the "slots", but it probably won't work.
+        with tf.variable_scope("moving_avg", use_resource=True):
+          return tf.group(
+              moving_averages.assign_moving_average(
+                  self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
 
       return tf.cond(tf.greater(ema_decay_tensor, 0.),
                      _assign_moving_average,
