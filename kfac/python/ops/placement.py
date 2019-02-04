@@ -167,7 +167,19 @@ class RoundRobinPlacementMixin(object):
 
 
 class TPURoundRobinPlacementMixin(object):
-  """Implements round robin placement strategy for certain ops on replicas."""
+  """Implements round robin placement strategy for certain ops on replicas.
+
+  This placement strategy can be used in certain TPU training systems, where
+  there are multiple "replicas" of the graph, such as in TPUEstimator. The
+  execution of inverse and transformation ops, which by default occurs
+  redundantly on all replicas, are instead distributed over replicas in a round-
+  robin fashion. This is achieved by using tf.cond statements to check the
+  replica id number.
+
+  This placement strategy doesn't need to be used with TPU training, and may
+  not work with all possible setups (such as TF Replicator). When it does work
+  however, it may provide a substantial improvement in wall-clock time.
+  """
 
   def __init__(self, distribute_transformations=True, **kwargs):
     """Create a TPURoundRobinPlacementMixin object.
@@ -219,9 +231,10 @@ class TPURoundRobinPlacementMixin(object):
       # compute_thunk computes its thunk only when self._replica_id ==
       # idx % self._num_replicas, where idx is the index of the thunk, otherwise
       # returning zeros. It then performs a cross_replica_sum on the output to
-      # share the non-zero outputs with every replica, and in particular the ones
-      # that didn't execute the thunk (which should be all but one of them).
-      # It's inefficient insofar as it's communicating a bunch of zero tensors.
+      # share the non-zero outputs with every replica, and in particular the
+      # ones that didn't execute the thunk (which should be all but one of
+      # them). It's inefficient insofar as it's communicating a bunch of zero
+      # tensors together with the non-zero ones instead of only the latter.
       def compute_thunk(thunk, params, idx):
         def compute_zeros():
           return nest.map_structure(tf.zeros_like, params)
@@ -281,18 +294,20 @@ class TPURoundRobinPlacementMixin(object):
     cov_variable_thunks = cov_variable_thunks_raw
 
     # cross_replica_mean of the cov values is performed internally in the
-    # FisherFactor classes, so we don't need to do anything for the cov updates.
+    # FisherFactor classes, so we don't need to do anything for the cov updates
+    # here.
     cov_update_thunks = cov_update_thunks_raw
 
     inv_variable_thunks = inv_variable_thunks_raw
 
-    # The packaged inv update thunk will conditionally execute the inverse
-    # update thunk when self._replica_id == idx % self._num_replicas, where
-    # idx is the index of the thunk.  It will then read the values from the
-    # corresponding inverse variables (or as zeros if self._replica_id
-    # != idx % self._num_replicas), and cross_replica_sums these, together,
-    # finally writing them back to the variables. Again there is a lot of
-    # needless communication happening here.
+    # The packaged inv update thunk will execute the inverse update thunk if
+    # self._replica_id == idx % self._num_replicas, where idx is the index of
+    # the thunk.  It will then set values_or_zeros to be (a list of) the values
+    # of the corresponding inverse variables if self._replica_id ==
+    # idx % self._num_replicas and zeros otherwise, and cross_replica_sum
+    # each element of values_or_zeros, and finally write the result back to the
+    # inverse variables. As with _place_and_compute_transformation_thunks,
+    # there is a lot of needless communication happening here.
     def package_inv_update_thunk(inv_update_thunk, idx):
 
       def packaged_inv_update_thunk():
