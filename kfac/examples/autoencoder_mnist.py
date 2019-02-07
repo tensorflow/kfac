@@ -82,6 +82,10 @@ flags.DEFINE_boolean('use_alt_data_reader', True,
 flags.DEFINE_string('device', '/gpu:0',
                     'The device to run the major ops on.')
 
+flags.DEFINE_boolean('adapt_damping', True,
+                     'If True we use the LM rule for damping adaptation as '
+                     'described in the original K-FAC paper.')
+
 
 FLAGS = flags.FLAGS
 
@@ -97,7 +101,7 @@ def make_train_op(batch_size,
     batch_size: Tensor of shape (), Size of the training batch.
     batch_loss: Tensor of shape (), Loss with respect to minibatch to be
       minimzed.
-    layer_collection: LayerCollection or None. Registry for model parameters.
+    layer_collection: LayerCollection object. Registry for model parameters.
       Required when using a K-FAC optimizer.
     loss_fn: Function which takes as input training data and returns loss.
     cached_reader: `data_reader.CachedReader` instance.
@@ -111,9 +115,6 @@ def make_train_op(batch_size,
       optimization method.
   """
   global_step = tf.train.get_or_create_global_step()
-
-  if layer_collection is None:
-    raise ValueError('layer_collection must be defined to use K-FAC.')
 
   if FLAGS.lrmu_adaptation == 'on':
     learning_rate = 1.0
@@ -129,22 +130,29 @@ def make_train_op(batch_size,
     momentum_type = 'regular'
     # momentum_type = 'adam'
 
+  if FLAGS.adapt_damping:
+    # When using damping adaptation it is advisable to start with a high value.
+    # This value is probably far too high to use for most neural nets if you
+    # aren't using damping adaptation. (Although it always depends on the scale
+    # of the loss.)
+    damping = 150.
+  else:
+    damping = 1e-2
+
   optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=FLAGS.inverse_update_period,
       cov_update_every=FLAGS.cov_update_period,
       learning_rate=learning_rate,
-      damping=150.,  # When using damping adaptation it is advisable to start
-                     # with a high value. This value is probably far too high
-                     # to use for most neural nets if you aren't using damping
-                     # adaptation. (Although it always depends on the scale of
-                     # the loss.)
+      damping=damping,
       cov_ema_decay=0.95,
       momentum=momentum,
       momentum_type=momentum_type,
       layer_collection=layer_collection,
       batch_size=batch_size,
       num_burnin_steps=5,
-      adapt_damping=True,
+      adapt_damping=FLAGS.adapt_damping,
+      # Note that all the arguments below don't do anything when
+      # adapt_damping=False.
       is_chief=True,
       prev_train_batch=cached_reader.cached_batch,
       loss_fn=loss_fn,
