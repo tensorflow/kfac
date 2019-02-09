@@ -19,7 +19,7 @@ from setuptools import setup
 
 setup(
     name='kfac',
-    version='0.1.3',
+    version='0.1.4',
     description='K-FAC for TensorFlow',
     author='Google Inc.',
     author_email='no-reply@google.com',
@@ -32,6 +32,7 @@ setup(
     install_requires=[
         'numpy',
         'six',
+        'tensorflow-probability',
     ],
     extras_require={
         'tensorflow': ['tensorflow>=1.4.1'],
