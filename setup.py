@@ -35,8 +35,8 @@ setup(
         'tensorflow-probability',
     ],
     extras_require={
-        'tensorflow': ['tensorflow>=1.4.1'],
-        'tensorflow_gpu': ['tensorflow-gpu>=1.4.1'],
+        'tensorflow': ['tensorflow>=1.12'],
+        'tensorflow_gpu': ['tensorflow-gpu>=1.12'],
         'tests': ['pytest', 'dm-sonnet'],
     },
     classifiers=[
