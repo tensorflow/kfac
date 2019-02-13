@@ -281,7 +281,7 @@ def _get_batch_size_schedule(num_examples):
          / math.log(float(minibatch_maxsize)/minibatch_startsize, 2))
   return [
       min(int(2.**(float(k)/div) * minibatch_startsize), minibatch_maxsize)
-      for k in range(500)
+      for k in range(minibatch_maxsize_targetiter)
   ]
 
 
