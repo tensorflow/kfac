@@ -403,6 +403,7 @@ class FisherFactor(object):
   """
 
   def __init__(self):
+    self._cov_tensor = None
     self._cov = None
     self._acc_cov = None
 
@@ -513,9 +514,9 @@ class FisherFactor(object):
     Returns:
       The op which updates the cov variable (via acc_cov).
     """
-    new_cov = self._compute_total_new_cov()
+    self._cov_tensor = self._compute_total_new_cov()
     return self._acc_cov.accumulate(
-        new_cov,
+        self._cov_tensor,
         ema_decay=ema_decay,
         num_steps_for_update=num_steps_per_cov_update,
         zero_debias=ZERO_DEBIAS)
@@ -1493,7 +1494,8 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     return "ff_convinkron_" + scope_string_from_params(
         tuple(self._inputs) +
         tuple((self._filter_shape, self._strides, self._padding,
-               self._dilation_rate, self._data_format, self._has_bias)))
+               self._dilation_rate, self._data_format, self._has_bias,
+               self._patch_mask)))
 
   @property
   def _cov_shape(self):
@@ -1567,7 +1569,7 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     if self._patch_mask is not None:
       assert self._patch_mask.shape == self._filter_shape[0:-1]
       # This should work as intended due to broadcasting.
-      patches *= self._patch_mask
+      patches *= tf.reshape(self._patch_mask, [-1])
 
     flatten_size = np.prod(self._filter_shape[0:-1])
     # patches_flat below is the matrix [[A_l]] from the KFC paper (tilde

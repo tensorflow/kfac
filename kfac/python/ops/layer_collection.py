@@ -577,6 +577,13 @@ class LayerCollection(object):
     evals = []
     for loss in self.losses:
       with tf.colocate_with(self.loss_colocation_ops[loss]):
+        if target_mode == "data":
+          loss_value = loss.evaluate()
+        elif target_mode == "sample":
+          loss_value = loss.evaluate_on_sample()
+        else:
+          raise ValueError("target_mode must be in ['data', 'sample']")
+
         if coeff_mode == "regular":
           multiplier = self.loss_coeffs[loss]
         elif coeff_mode == "sqrt":
@@ -585,13 +592,8 @@ class LayerCollection(object):
           multiplier = 1.0
         else:
           raise ValueError("coeff_mode must be in ['regular', 'sqrt', 'off']")
-
-        if target_mode == "data":
-          evals.append(multiplier * loss.evaluate())
-        elif target_mode == "sample":
-          evals.append(multiplier * loss.evaluate_on_sample())
-        else:
-          raise ValueError("target_mode must be in ['data', 'sample']")
+        multiplier = tf.cast(multiplier, dtype=loss_value.dtype)
+        evals.append(multiplier * loss_value)
     return evals
 
   def total_loss(self, coeff_mode="regular"):

@@ -631,9 +631,9 @@ class FisherEstimator(object):
     transformed_random_signs = []
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
-        transformed_random_signs.append(
-            tf.sqrt(self.layers.loss_coeffs[loss])*mult_func(
-                loss, utils.generate_random_signs(inner_shape_func(loss))))
+        value = mult_func(loss, utils.generate_random_signs(inner_shape_func(loss)))
+        coeff = tf.cast(self.layers.loss_coeffs[loss], dtype=value.dtype)
+        transformed_random_signs.append(tf.sqrt(coeff) * value)
     return transformed_random_signs
 
   def _get_grads_lists_curvature_prop(self, tensors):
