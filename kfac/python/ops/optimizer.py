@@ -55,6 +55,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                var_list=None,
                momentum=0.9,
                momentum_type="regular",
+               qmodel_update_rescale=None,
                norm_constraint=None,
                name="KFAC",
                estimation_mode="gradients",
@@ -82,10 +83,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
     Args:
       learning_rate: float or 0D Tensor. The base learning rate for the
-          optimizer.  Should probably be set to 1.0 when using momentum_type =
-          'qmodel'/'qmodel_fixedmu', but can still be set to a different value
-          if desired (effectively applying the learning rate on top of whatever
-          update the qmodel approach computes).
+          optimizer. Must be set to None if using one of the 'qmodel'
+          momentum_type values.
       damping: float or 0D Tensor. This quantity times the identity matrix is
           (approximately) added to the curvature matrix (i.e. the Fisher or GGN)
           before it is inverted multiplied by the gradient when computing the
@@ -110,7 +109,16 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       momentum: The momentum decay constant to use. Only applies when
           momentum_type is 'regular' or 'adam'. (Default: 0.9)
       momentum_type: The type of momentum to use in this optimizer, one of
-          'regular', 'adam', or 'qmodel'. (Default: 'regular')
+          'regular', 'adam', 'qmodel', or 'qmodel_fixedmu'. 'regular' gives
+          standard momentum. 'adam' gives a style of momentum reminisent
+          of the Adam method. 'qmodel' makes the optimizer perform automatic
+          control of both the learning rate and momentum using a quadratic
+          model based method (see _compute_qmodel_hyperparams for more
+          details). 'qmodel_fixedmu' is similar to 'qmodel' but only controls
+          the learning rate. (Default: 'regular')
+      qmodel_update_rescale: float or None.  An additional multiplier to apply
+          to the update computed by the quadratic model based adjustment
+          methods. If None it will behave like a value of 1.0. (Default: None)
       norm_constraint: float or Tensor. If specified, the update is scaled down
           so that its approximate squared Fisher norm v^T F v is at most the
           specified value. May only be used with momentum type 'regular'.  See
@@ -236,6 +244,23 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     self._train_batch = train_batch
 
     self._loss = None
+
+    if self._momentum_type.startswith("qmodel"):
+      if learning_rate is not None:
+        raise ValueError("'learning_rate' must be set to None if using one of "
+                         "the 'qmodel' momentum types.")
+      if qmodel_update_rescale is not None:
+        learning_rate = qmodel_update_rescale
+      else:
+        learning_rate = 1.0
+    else:
+      if learning_rate is None:
+        raise ValueError("'learning_rate' must *not* be set to None unless "
+                         "using one of the 'qmodel' momentum types.")
+      if qmodel_update_rescale is not None:
+        raise ValueError("'qmodel_update_rescale' must be None unless using "
+                         "one of the 'qmodel' momentum types.")
+    self._qmodel_update_rescale = qmodel_update_rescale
 
     with tf.variable_scope(name):
       # We store rho only for possible logging purposes.
@@ -613,29 +638,31 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     return sprod_p(coeff, precon_grads_and_vars)
 
   def _compute_prev_updates(self, variables):
-    """Computes previous updates as negative velocities scaled by learning rate.
+    """Returns the previous update vector computed using the quadratic model.
 
-    Note that this is not actually the previous update if momentum_type="adam".
+    Note that this vector does not include any additional scaling that may have
+    been applied after the quadratic model optimization (i.e. the quantity
+    returned by self.learning_rate).
+
+    Note that this may not actually be the previous update if
+    momentum_type="adam".
 
     Args:
-      variables: List of variables in the graph that the update will be
-          applied to.
+      variables: List of variables for which to compute the previous update.
 
     Returns:
-      List of (previous update, variable) pairs where the previous updates
-      have been applied to the `variables`.
+      List of (previous_update, variable) pairs in the same order as
+      `variables`.
     """
-    # This feels like a hack.  What if learnings_rate changes over iterations?
-    # Also, what guarantee do we have that this is the old value and not the
+    # What guarantee do we have that this is the old value and not the
     # new value?  Remember that control flow doesn't work in TF whenever
     # non-resource variables are involved.
     # TODO(b/121245468): Figure out if this is a problem and if not explain why
     # Or fix it by somehow forcing the slots to use resource variables instead.
 
     prev_updates = sprod(
-        -1. * self._learning_rate,
-        tuple(self._zeros_slot(var, "velocity", self.get_name())
-              for var in variables))
+        -1., tuple(self._zeros_slot(var, "velocity", self.get_name())
+                   for var in variables))
     return zip(prev_updates, variables)
 
   def _compute_qmodel(self,
@@ -775,23 +802,30 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
       if fixed_mu is None:
         sol = -1. * _two_by_two_solve(m, c)
-        alpha = sol[0][0]
-        mu = sol[1][0]
+        alpha = sol[0, 0]
+        mu = sol[1, 0]
 
-        # This is a special formula that takes advantage of the particular
-        # relationship of sol to m and c. It should be equivalent to
-        # _eval_quadratic(m, c, sol) if everything is working properly.
-        qmodel_change = 0.5 * tf.reduce_sum(sol * c)
+        if self._qmodel_update_rescale is None:
+          # This is a special formula that takes advantage of the particular
+          # relationship of sol to m and c. It should be equivalent to
+          # _eval_quadratic(m, c, sol) if everything is working properly.
+          qmodel_change = 0.5 * tf.reduce_sum(sol * c)
+        else:
+          sol = self._qmodel_update_rescale * sol
+          qmodel_change = _eval_quadratic(m, c, sol)
 
         # Subtract out the damping-related penalty
         if not _INCLUDE_DAMPING_IN_QMODEL_CHANGE:
           qmodel_change -= _eval_quadratic_no_c(b, sol)
 
       else:
-        alpha = -1. * (fixed_mu*m[0][1] + c[0][0]) / (m[0][0])
+        alpha = -1. * (fixed_mu * m[0][1] + c[0][0]) / (m[0][0])
         mu = fixed_mu
 
         sol = [[alpha], [mu]]
+
+        if self._qmodel_update_rescale is not None:
+          sol = self._qmodel_update_rescale * tf.convert_to_tensor(sol)
 
         qmodel_change = _eval_quadratic(m, c, sol)
 
@@ -812,6 +846,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         quadratic model, and
         qmodel_change = qmodel(alpha*precon_grad) - qmodel(0)
       """
+      # While it might seem like this call performs needless computations
+      # involving prev_updates_and_vars (which is zero), because we extract
+      # out only the part of the solution that is not zero the rest of it
+      # will not actually be computed by TensorFlow (I think)
       m, c, b = self._compute_qmodel(
           precon_grads_and_vars, prev_updates_and_vars, grads_and_vars)
 
@@ -825,13 +863,20 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       else:
         mu = fixed_mu
 
-      # This is a special formula that takes advantage of the particular
-      # relationship of sol to m and c.
-      qmodel_change = 0.5 * alpha * c
+      if self._qmodel_update_rescale is None:
+        # This is a special formula that takes advantage of the particular
+        # relationship of sol to m and c.
+        qmodel_change = 0.5 * alpha * c
 
-      # Subtract out the damping-related penalty
-      if not _INCLUDE_DAMPING_IN_QMODEL_CHANGE:
-        qmodel_change -= 0.5 * tf.square(alpha)*b
+        # Subtract out the damping-related penalty
+        if not _INCLUDE_DAMPING_IN_QMODEL_CHANGE:
+          qmodel_change -= 0.5 * tf.square(alpha) * b
+      else:
+        sol = self._qmodel_update_rescale * alpha
+        qmodel_change = 0.5*m*tf.square(sol) + c * sol
+        # Subtract out the damping-related penalty
+        if not _INCLUDE_DAMPING_IN_QMODEL_CHANGE:
+          qmodel_change -= 0.5 * tf.square(sol) * b
 
       return alpha, mu, qmodel_change
 
@@ -971,7 +1016,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
     elif (self._momentum_type == "qmodel"
           or self._momentum_type == "qmodel_fixedmu"):
-      # Compute "preconditioned" gradient.
+      # Compute "preconditioned gradient".
       precon_grads_and_vars = self._multiply_preconditioner(grads_and_vars)
 
       if self._momentum_type == "qmodel_fixedmu":

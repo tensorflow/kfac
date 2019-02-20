@@ -54,6 +54,8 @@ flags.DEFINE_float('learning_rate', 3e-3,
 flags.DEFINE_float('momentum', 0.9,
                    'Momentum decay value to use when '
                    'lrmu_adaptation="off" or "only_lr".')
+flags.DEFINE_float('damping', 1e-2, 'The fixed damping value to use. This is '
+                   'ignored if adapt_damping is True.')
 
 flags.DEFINE_float('weight_decay', 1e-5,
                    'L2 regularization applied to weight matrices.')
@@ -86,6 +88,19 @@ flags.DEFINE_boolean('adapt_damping', True,
                      'If True we use the LM rule for damping adaptation as '
                      'described in the original K-FAC paper.')
 
+# When using damping adaptation it is advisable to start with a high
+# value. This value is probably far too high to use for most neural nets
+# if you aren't using damping adaptation. (Although it always depends on
+# the scale of the loss.)
+flags.DEFINE_float('initial_damping', 150.0,
+                   'The initial damping value to use when adapt_damping is '
+                   'True.')
+
+flags.DEFINE_string('optimizer', 'kfac',
+                    'The optimizer to use. Can be kfac or adam. If adam is '
+                    'used the various kfac hyperparameter map roughly on to '
+                    'their Adam equivalents.')
+
 
 FLAGS = flags.FLAGS
 
@@ -116,50 +131,55 @@ def make_train_op(batch_size,
   """
   global_step = tf.train.get_or_create_global_step()
 
-  if FLAGS.lrmu_adaptation == 'on':
-    learning_rate = 1.0
-    momentum = None
-    momentum_type = 'qmodel'
-  elif FLAGS.lrmu_adaptation == 'only_lr':
-    learning_rate = 1.0
-    momentum = FLAGS.momentum
-    momentum_type = 'qmodel_fixedmu'
-  elif FLAGS.lrmu_adaptation == 'off':
-    learning_rate = FLAGS.learning_rate
-    momentum = FLAGS.momentum
-    momentum_type = 'regular'
-    # momentum_type = 'adam'
+  if FLAGS.optimizer == 'kfac':
+    if FLAGS.lrmu_adaptation == 'on':
+      learning_rate = None
+      momentum = None
+      momentum_type = 'qmodel'
+    elif FLAGS.lrmu_adaptation == 'only_lr':
+      learning_rate = None
+      momentum = FLAGS.momentum
+      momentum_type = 'qmodel_fixedmu'
+    elif FLAGS.lrmu_adaptation == 'off':
+      learning_rate = FLAGS.learning_rate
+      momentum = FLAGS.momentum
+      momentum_type = 'regular'
+      # momentum_type = 'adam'
 
-  if FLAGS.adapt_damping:
-    # When using damping adaptation it is advisable to start with a high value.
-    # This value is probably far too high to use for most neural nets if you
-    # aren't using damping adaptation. (Although it always depends on the scale
-    # of the loss.)
-    damping = 150.
-  else:
-    damping = 1e-2
+    if FLAGS.adapt_damping:
+      damping = FLAGS.initial_damping
+    else:
+      damping = FLAGS.damping
 
-  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
-      invert_every=FLAGS.inverse_update_period,
-      cov_update_every=FLAGS.cov_update_period,
-      learning_rate=learning_rate,
-      damping=damping,
-      cov_ema_decay=0.95,
-      momentum=momentum,
-      momentum_type=momentum_type,
-      layer_collection=layer_collection,
-      batch_size=batch_size,
-      num_burnin_steps=5,
-      adapt_damping=FLAGS.adapt_damping,
-      # Note that all the arguments below don't do anything when
-      # adapt_damping=False.
-      is_chief=True,
-      prev_train_batch=cached_reader.cached_batch,
-      loss_fn=loss_fn,
-      damping_adaptation_decay=0.95,
-      damping_adaptation_interval=FLAGS.damping_adaptation_interval,
-      min_damping=FLAGS.weight_decay
-      )
+    optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
+        invert_every=FLAGS.inverse_update_period,
+        cov_update_every=FLAGS.cov_update_period,
+        learning_rate=learning_rate,
+        damping=damping,
+        cov_ema_decay=0.95,
+        momentum=momentum,
+        momentum_type=momentum_type,
+        layer_collection=layer_collection,
+        batch_size=batch_size,
+        num_burnin_steps=5,
+        adapt_damping=FLAGS.adapt_damping,
+        # Note that all the arguments below don't do anything when
+        # adapt_damping=False.
+        is_chief=True,
+        prev_train_batch=cached_reader.cached_batch,
+        loss_fn=loss_fn,
+        damping_adaptation_decay=0.95,
+        damping_adaptation_interval=FLAGS.damping_adaptation_interval,
+        min_damping=FLAGS.weight_decay
+        )
+
+  elif FLAGS.optimizer == 'adam':
+    optimizer = tf.train.AdamOptimizer(
+        learning_rate=FLAGS.learning_rate,
+        beta1=FLAGS.momentum,
+        epsilon=FLAGS.damping,
+        beta2=0.99)
+
   return optimizer.minimize(batch_loss, global_step=global_step), optimizer
 
 
@@ -324,12 +344,21 @@ def main(_):
   (train_op, opt, batch_loss, batch_error, batch_size_schedule,
    batch_size) = construct_train_quants()
 
-  learning_rate = opt.learning_rate
-  momentum = opt.momentum
-  damping = opt.damping
-  rho = opt.rho
-  qmodel_change = opt.qmodel_change
   global_step = tf.train.get_or_create_global_step()
+
+  if FLAGS.optimizer == 'kfac':
+    # We need to put the control depenency on train_op here so that we are
+    # guaranteed to get the up-to-date values of these various quantities.
+    # Otherwise there is a race condition and we might get the old values,
+    # nondeterministically. Another solution would be to get these values in
+    # a separate sess.run call, but this can sometimes cause problems with
+    # training frameworks that use hooks (see the comments below).
+    with tf.control_dependencies([train_op]):
+      learning_rate = opt.learning_rate
+      momentum = opt.momentum
+      damping = opt.damping
+      rho = opt.rho
+      qmodel_change = opt.qmodel_change
 
   # Without setting allow_soft_placement=True there will be problems when
   # the optimizer tries to place certain ops like "mod" on the GPU (which isn't
@@ -347,17 +376,25 @@ def main(_):
       else:
         batch_size_ = FLAGS.batch_size
 
-      _, batch_loss_, batch_error_ = sess.run(
-          [train_op, batch_loss, batch_error],
-          feed_dict={batch_size: batch_size_})
-
-      # We get these things in a separate sess.run() call because they are
-      # stored as variables in the optimizer. (So there is no computational cost
-      # to getting them, and if we don't get them after the previous call is
-      # over they might not be updated.)
-      (learning_rate_, momentum_, damping_, rho_,
-       qmodel_change_) = sess.run([learning_rate, momentum, damping, rho,
-                                   qmodel_change])
+      # It's good practice to put everything into a single sess.run call. The
+      # reason is that certain "training frameworks" like to run hooks at each
+      # sess.run call, and there is an implicit expectation there will only
+      # be one sess.run call every "iteration" of the "optimizer". For example,
+      # a framework might try to print the loss at each sess.run call, causing
+      # the mini-batch to be advanced, thus completely breaking the "cached
+      # batch" mechanism that the damping adaptation method may rely on. (Plus
+      # there will also be the extra cost of having to reevaluate the loss
+      # twice.)
+      if FLAGS.optimizer == 'kfac':
+        (_, batch_loss_, batch_error_, learning_rate_, momentum_, damping_,
+         rho_, qmodel_change_) = sess.run([train_op, batch_loss, batch_error,
+                                           learning_rate, momentum, damping,
+                                           rho, qmodel_change],
+                                          feed_dict={batch_size: batch_size_})
+      else:
+        _, batch_loss_, batch_error_ = sess.run(
+            [train_op, batch_loss, batch_error],
+            feed_dict={batch_size: batch_size_})
 
       # Print training stats.
       tf.logging.info(
@@ -365,12 +402,15 @@ def main(_):
       tf.logging.info(
           'mini-batch size: %d | mini-batch loss = %f | mini-batch error = %f ',
           batch_size_, batch_loss_, batch_error_)
-      tf.logging.info(
-          'learning_rate = %f | momentum = %f',
-          learning_rate_, momentum_)
-      tf.logging.info(
-          'damping = %f | rho = %f | qmodel_change = %f',
-          damping_, rho_, qmodel_change_)
+
+      if FLAGS.optimizer == 'kfac':
+        tf.logging.info(
+            'learning_rate = %f | momentum = %f',
+            learning_rate_, momentum_)
+        tf.logging.info(
+            'damping = %f | rho = %f | qmodel_change = %f',
+            damping_, rho_, qmodel_change_)
+
       tf.logging.info('----')
 
 
