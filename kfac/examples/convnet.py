@@ -487,7 +487,7 @@ def distributed_grads_and_ops_dedicated_workers(
   Different workers are responsible for different parts of K-FAC's Ops. The
   first 60% of tasks compute gradients; the next 20% accumulate covariance
   statistics; the last 20% invert the matrices used to precondition gradients.
-  The chief worker applies the gradient .
+  The chief worker computes and applies the update.
 
   Args:
     task_id: int. Integer in [0, num_worker_tasks). ID for this worker.

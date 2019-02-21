@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Implements placement strategies for various ops and cov variables."""
+"""Implements placement strategies for various ops and variables."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -166,7 +166,7 @@ class RoundRobinPlacementMixin(object):
             inv_variable_thunks, inv_update_thunks)
 
 
-class TPURoundRobinPlacementMixin(object):
+class ReplicaRoundRobinPlacementMixin(object):
   """Implements round robin placement strategy for certain ops on replicas.
 
   This placement strategy can be used in certain TPU training systems, where
@@ -182,7 +182,7 @@ class TPURoundRobinPlacementMixin(object):
   """
 
   def __init__(self, distribute_transformations=True, **kwargs):
-    """Create a TPURoundRobinPlacementMixin object.
+    """Create a ReplicaRoundRobinPlacementMixin object.
 
     Args:
       distribute_transformations: Bool. If True we distribute certain vector
@@ -193,19 +193,15 @@ class TPURoundRobinPlacementMixin(object):
       **kwargs: Pass through arguments.
     """
 
-    if not utils.on_tpu():
+    if not utils.is_replicated():
       raise ValueError("This placement mode should only be used with certain "
-                       "kinds of TPU setups, such as TPUEstimator.")
+                       "kinds of 'replicated' setups, such as TPUEstimator.")
 
     self._replica_id = utils.get_replica_id()
-
-    # I'm assuming replicas and shards are the same thing until someone tells
-    # me different
-    self._num_replicas = utils.get_num_tpu_shards()
-
+    self._num_replicas = utils.get_num_replicas()
     self._distribute_transformations = distribute_transformations
 
-    super(TPURoundRobinPlacementMixin, self).__init__(**kwargs)
+    super(ReplicaRoundRobinPlacementMixin, self).__init__(**kwargs)
 
   def _place_and_compute_transformation_thunks(self, thunks, params_list):
     """Computes transformation thunks with round-robin replica placement.
@@ -214,8 +210,7 @@ class TPURoundRobinPlacementMixin(object):
     the `blocks` property, cycling through the replicas in numerical order.
 
     In more detail, only one replica will compute each transformation thunk,
-    while the rest just compute zeros of the same shape. The results are then
-    shared via utils.cross_replica_sum.
+    with the results being shared via utils.cross_replica_partial_sum().
 
     Args:
       thunks: A list of thunks to run. Must be in one to one correspondence
@@ -227,26 +222,17 @@ class TPURoundRobinPlacementMixin(object):
       A list (in the same order) of the returned results of the thunks, with
       round-robin replica placement applied.
     """
+    del params_list
+
     if self._distribute_transformations:
-      # compute_thunk computes its thunk only when self._replica_id ==
-      # idx % self._num_replicas, where idx is the index of the thunk, otherwise
-      # returning zeros. It then performs a cross_replica_sum on the output to
-      # share the non-zero outputs with every replica, and in particular the
-      # ones that didn't execute the thunk (which should be all but one of
-      # them). It's inefficient insofar as it's communicating a bunch of zero
-      # tensors together with the non-zero ones instead of only the latter.
-      def compute_thunk(thunk, params, idx):
-        def compute_zeros():
-          return nest.map_structure(tf.zeros_like, params)
 
-        return nest.map_structure(
-            utils.cross_replica_sum,
-            tf.cond(tf.equal(self._replica_id, idx % self._num_replicas),
-                    thunk, compute_zeros, strict=True))
+      def process_thunk(thunk, idx):
+        should_compute_trans = tf.equal(self._replica_id,
+                                        idx % self._num_replicas)
+        return utils.cross_replica_partial_sum(thunk, should_compute_trans)
 
-      return tuple(compute_thunk(thunk, params, idx)
-                   for idx, (thunk, params) in enumerate(zip(thunks,
-                                                             params_list)))
+      return tuple(process_thunk(thunk, idx)
+                   for idx, thunk in enumerate(thunks))
     else:
       return tuple(thunk() for thunk in thunks)
 
@@ -301,32 +287,27 @@ class TPURoundRobinPlacementMixin(object):
     inv_variable_thunks = inv_variable_thunks_raw
 
     # The packaged inv update thunk will execute the inverse update thunk if
-    # self._replica_id == idx % self._num_replicas, where idx is the index of
-    # the thunk.  It will then set values_or_zeros to be (a list of) the values
-    # of the corresponding inverse variables if self._replica_id ==
-    # idx % self._num_replicas and zeros otherwise, and cross_replica_sum
-    # each element of values_or_zeros, and finally write the result back to the
-    # inverse variables. As with _place_and_compute_transformation_thunks,
-    # there is a lot of needless communication happening here.
+    # should_compute_inv is True, where should_compute_inv =
+    # (self._replica_id == idx % self._num_replicas), and where idx is the
+    # index of the thunk.  It will then call cross_replica_partial_sum (with
+    # include_me = should_compute_inv) on the corresponding inverse variables,
+    # updating said variables with the returned results.
+
     def package_inv_update_thunk(inv_update_thunk, idx):
 
+      should_compute_inv = tf.equal(self._replica_id, idx % self._num_replicas)
+
       def packaged_inv_update_thunk():
-        maybe_update_inv = tf.cond(
-            tf.equal(self._replica_id, idx % self._num_replicas),
-            inv_update_thunk, tf.no_op)
+
+        maybe_update_inv = tf.cond(should_compute_inv,
+                                   inv_update_thunk, tf.no_op)
 
         with tf.control_dependencies([maybe_update_inv]):
           inv_vars = self.factors[idx].get_inv_vars()
 
           if inv_vars:
-            values_or_zeros = tf.cond(tf.equal(self._replica_id,
-                                               idx % self._num_replicas),
-                                      lambda: map(tf.identity, inv_vars),
-                                      lambda: map(tf.zeros_like, inv_vars),
-                                      strict=True)
-
-            values = map(utils.cross_replica_sum, values_or_zeros)
-
+            values = utils.cross_replica_partial_sum(lambda: inv_vars,
+                                                     should_compute_inv)
             return tf.group(*(var.assign(val)
                               for val, var in zip(values, inv_vars)))
           else:

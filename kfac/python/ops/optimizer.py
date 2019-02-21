@@ -80,6 +80,15 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       over the execution of K-FAC's various ops.  For a more fool-proof /
       automated version see for example PeriodicInvCovUpdateKfacOpt.
 
+      Also, please keep in mind that while the K-FAC code loosely conforms to
+      TensorFlow's Optimizer API it can't be used naively as a "drop in
+      replacement" for basic classes like MomentumOptimizer.  Using it
+      properly with SyncReplicasOptimizer, for example, requires special care.
+
+      See the various examples in the "examples" directory for a guide about
+      how to use K-FAC in various contexts and various systems, like
+      TF-Estimator. See in particular the "convnet" example.  google/examples
+      also contains an example using TPUEstimator and CrossShardOptimizer.
 
     Args:
       learning_rate: float or 0D Tensor. The base learning rate for the
@@ -103,9 +112,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           graph.  The layer_collection cannot be modified after KfacOptimizer's
           initialization.
       cov_ema_decay: The decay factor used when calculating the
-        covariance estimate moving averages. (Default: 0.95)
+          covariance estimate moving averages. (Default: 0.95)
       var_list: Optional list or tuple of variables to train. Defaults to
-        tf.trainable_variables.
+          tf.trainable_variables.
       momentum: The momentum decay constant to use. Only applies when
           momentum_type is 'regular' or 'adam'. (Default: 0.9)
       momentum_type: The type of momentum to use in this optimizer, one of
@@ -134,61 +143,66 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           compute in the estimator be colocated with their respective ops.
           (Default: True)
       batch_size: The size of the mini-batch. Only needed when `momentum_type`
-          == 'qmodel', when automatic adjustment is used, or when
-          `compute_params_stats` is True. (Default: None)
+          == 'qmodel' or when `compute_params_stats` is True. Note that when
+          using data parallelism where the model graph and optimizer are
+          replicated across multiple devices, this should be the per-replica
+          batch size. An example of this is sharded data on the TPU, where
+          batch_size should be set to the total batch size divided by the
+          number of shards. (Default: None)
       placement_strategy: string or None. Device placement strategy used when
-        creating variables, and various ops. Can be None, 'round_robin', or
-        'tpu_round_robin'. 'round_robin' supports round-robin placement of
-        various ops on lists of provided devices. 'tpu_round_robin' does
-        something similar but over shards/replicas instead, and only works
-        in certain TPU contexts (e.g. TPUEstimator).  The details of the
-        different placement strategies are controlled by additional keyword
-        arguments that can be passed to this class, and which are described
-        in the different placement mixin classes in placement.py.
-        (Default: None)
+          creating variables, and various ops. Can be None, 'round_robin', or
+          'replica_round_robin'. 'round_robin' supports round-robin placement of
+          various ops on lists of provided devices. 'replica_round_robin' does
+          something similar but over shards/replicas instead, and only works
+          in certain 'replicated' contexts (e.g. TPUEstimator).  The details of
+          the different placement strategies are controlled by additional
+          keyword arguments that can be passed to this class, and which are
+          described in the different placement mixin classes in placement.py.
+          (Default: None)
       num_steps_per_cov_update: int, The updates to the covariance estimates
-        are accumulated for `num_steps_per_cov_update` steps before being
-        applied (using a decayed average). This is useful when accumulating
-        update information across multiple session.run calls.
-        (Default: 1)
+          are accumulated for `num_steps_per_cov_update` steps before being
+          applied (using a decayed average). This is useful when accumulating
+          update information across multiple session.run calls.
+          (Default: 1)
       compute_params_stats: Bool. If True, we compute the first order version
-        of the statistics computed to estimate the Fisher/GGN. These correspond
-        to the `variables` method in a one-to-one fashion.  They are available
-        via the `params_stats` property.  When estimation_mode is 'empirical',
-        this will correspond to the standard parameter gradient on the loss.
-        (Default: False)
+          of the statistics computed to estimate the Fisher/GGN. These
+          correspond to the `variables` method in a one-to-one fashion.  They
+          are available via the `params_stats` property.  When estimation_mode
+          is 'empirical', this will correspond to the standard parameter
+          gradient on the loss. (Default: False)
       adapt_damping: `Boolean`. If True we adapt the damping according to the
-        Levenberg-Marquardt style rule described in Section 6.5 of the original
-        K-FAC paper.  The remaining arguments all control various aspects of
-        the adaptive damping method. Note that unless using a convenience
-        subclass like PeriodicInvCovUpdateKfacOpt the damping adaptation op
-        must be executed by the user (like the cov and inv ops) using the
-        maybe_adapt_damping() method. (Default: False)
+          Levenberg-Marquardt rule described in Section 6.5 of the original
+          K-FAC paper.  The remaining arguments all control various aspects of
+          the adaptive damping method. Note that unless using a convenience
+          subclass like PeriodicInvCovUpdateKfacOpt the damping adaptation op
+          must be executed by the user (like the cov and inv ops) using the
+          maybe_adapt_damping() method. (Default: False)
       is_chief: `Boolean`, `True` if the worker is chief. (Default: True)
       prev_train_batch: Training mini-batch used in the previous step. This
-        will be used to evaluate loss by calling `loss_fn(prev_train_batch)`
-        when damping adaptation is used. (Default: None)
+          will be used to evaluate loss by calling `loss_fn(prev_train_batch)`
+          when damping adaptation is used. (Default: None)
       loss_fn: `function` that takes as input training data tensor and returns
-        a scalar loss. Only needed if using damping adaptation. (Default: None)
+          a scalar loss. Only needed if using damping adaptation.
+          (Default: None)
       min_damping: `float`, Minimum value the damping parameter
-        can take. This should be at least as big as the L2 regularization
-        coefficient. (Default: 1e-8)
+          can take. This should be at least as big as the L2 regularization
+          coefficient. (Default: 1e-8)
       damping_adaptation_decay: `float`, The `damping` parameter is
-        multiplied by the `damping_adaptation_decay` every
-        `damping_adaptation_interval` number of iterations. (Default: 0.99)
+          multiplied by the `damping_adaptation_decay` every
+          `damping_adaptation_interval` number of iterations. (Default: 0.99)
       damping_adaptation_interval: `int`, Number of steps in between
-        updating the `damping` parameter. (Default: 5)
+          updating the `damping` parameter. (Default: 5)
       use_passed_loss: `Boolean`. If True we use the loss tensor passed in by
-        the user (via minimze() or compute_gradients() or the set_loss() method)
-        in damping adaptation scheme, instead of calling loss_fn() a second
-        time for this. This is more efficient but may not always be desired.
-        (Default: True)
+          the user (via minimze() or compute_gradients() or the set_loss()
+          method) in damping adaptation scheme, instead of calling loss_fn()
+          a second time for this. This is more efficient but may not always be
+          desired. (Default: True)
       train_batch: Training mini-batch used in the current step. This
-        will be used to evaluate loss by calling `loss_fn(train_batch)`
-        when damping adaptation is used and `use_passed_loss` is False.
-        (Default: None)
-      **kwargs: Arguments to be passed to specific placement
-        strategy mixin. Check `placement.RoundRobinPlacementMixin` for example.
+          will be used to evaluate loss by calling `loss_fn(train_batch)`
+          when damping adaptation is used and `use_passed_loss` is False.
+          (Default: None)
+      **kwargs: Arguments to be passed to specific placement strategy mixin.
+          Check `placement.RoundRobinPlacementMixin` for example.
 
     Raises:
       ValueError: If the momentum type is unsupported.
@@ -241,6 +255,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         self._damping_adaptation_decay**self._damping_adaptation_interval)
     self._min_damping = min_damping
     self._use_passed_loss = use_passed_loss
+    if not use_passed_loss and train_batch is None:
+      raise ValueError("Must pass in train_batch if used_passed_loss is false.")
+
     self._train_batch = train_batch
 
     self._loss = None
@@ -997,7 +1014,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       if self._adapt_damping and self._is_chief:
         def compute_qmodel_change():
           # This is a special formula that exploits the structure of the
-          # particular update we are using.
+          # particular update we are using.  Note that this is using the approx
+          # Fisher as defined by the inverses, which might be stale (perhaps so
+          # stale that they are using an old damping value, which may mess up
+          # the damping adaptation method).
           return (0.5 * (self._learning_rate**2) *
                   ip_p(raw_updates_and_vars, velocities_and_vars) -
                   self._learning_rate * ip_p(raw_updates_and_vars,

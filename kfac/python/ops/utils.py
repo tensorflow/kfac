@@ -26,7 +26,7 @@ from tensorflow.contrib.tpu.python.ops import tpu_ops
 from tensorflow.contrib.tpu.python.tpu import tpu_function
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.training import moving_averages
-
+from tensorflow.python.util import nest
 
 # Method used for inverting matrices.
 POSDEF_INV_METHOD = "cholesky"
@@ -339,77 +339,111 @@ def fwd_gradients(ys, xs, grad_xs=None, stop_gradients=None,
   return dysdx
 
 
-def on_tpu():
-  """Returns True when building a TPU computation."""
-  return tpu_function.get_tpu_context().number_of_shards is not None
-
-
-def get_num_tpu_shards():
+def get_num_replicas():
+  # I'm assuming replicas and shards are always equal until someone tells me
+  # different.
   return tpu_function.get_tpu_context().number_of_shards
 
 
-def cross_replica_mean(tensor, name=None):
-  """Takes mean value of a Tensor across all TPU cores.
+def is_replicated():
+  return get_num_replicas() is not None
+
+
+def cross_replica_mean(structure, name=None):
+  """Averages the contents of a nested structure across all replicas.
 
   Args:
-    tensor: Tensor to be synchronized.
+    structure: A nested structure of Tensors.
     name: None or string. Name of Op.
 
   Returns:
-    Average of Tensor across all TPU cores.
-
-  Raises:
-    ValueError: If called outside of TPU context.
+    A nested structure with the corresponding Tensors being the cross-replica
+    averaged versions of those in `structure`.
   """
-  with tf.name_scope(name, "cross_replica_mean", [tensor]):
-    num_shards = get_num_tpu_shards()
-    if num_shards is None:
-      raise ValueError(
-          "Cannot take cross_replica_mean() outside of TPU Context.")
-    if num_shards == 1:
-      return tensor
-    return tf.contrib.tpu.cross_replica_sum(tensor / num_shards)
+
+  num_replicas = get_num_replicas()
+
+  if num_replicas and num_replicas > 1:
+    with tf.name_scope(name, "cross_replica_mean", nest.flatten(structure)):
+      return nest.map_structure(
+          lambda x: tf.contrib.tpu.cross_replica_sum(x / num_replicas),
+          structure)
+  else:
+    return structure
 
 
-def cross_replica_sum(tensor, name=None):
-  """Takes sum of values of a Tensor across all TPU cores.
+def cross_replica_sum(structure, name=None):
+  """Sums the contents of a nested structure across all replicas.
 
   Args:
-    tensor: Tensor to be synchronized.
+    structure: A nested structure of Tensors.
     name: None or string. Name of Op.
 
   Returns:
-    Sum of Tensor across all TPU cores.
-
-  Raises:
-    ValueError: If called outside of TPU context.
+    A nested structure with the corresponding Tensors being the cross-replica
+    summed versions of those in `structure`.
   """
-  with tf.name_scope(name, "cross_replica_sum", [tensor]):
-    num_shards = get_num_tpu_shards()
-    if num_shards is None:
-      raise ValueError(
-          "Cannot take cross_replica_sum() outside of TPU Context.")
-    if num_shards == 1:
-      return tensor
-    return tf.contrib.tpu.cross_replica_sum(tensor)
+  num_replicas = get_num_replicas()
+
+  if num_replicas and num_replicas > 1:
+    with tf.name_scope(name, "cross_replica_sum", nest.flatten(structure)):
+      return nest.map_structure(tf.contrib.tpu.cross_replica_sum, structure)
+  else:
+    return structure
+
+
+def cross_replica_partial_sum(thunk, include_me, name=None):
+  """Return sum of (conditionally executed) thunks across replicas.
+
+  Args:
+    thunk: A thunk returning a nested structure of Tensors. These should all
+      have statically known shapes.
+    include_me: 0D Tensor of type tf.bool. If this is true, this replica is
+      included in the sum. Otherwise it is ignored and the output of thunk
+      will not be included as a dependency in the graph.
+    name: None or string. Name of Op.
+
+  Returns:
+    A nested structure with the corresponding Tensors being the cross-replica
+    summed versions of those in `structure`.
+  """
+  fail = tf.Assert(tf.constant(False),
+                   ["It appears that TF wasn't able to statically determine "
+                    "the shape of the tensors returned by thunk."])
+  # This control dependency checks that we don't execute any of the ops
+  # returned by that call to the thunk.  These shouldn't be executed because
+  # that part of the graph is supposed to only be used to get the shape
+  # and type information needed by zeros_like().
+  with tf.control_dependencies([fail]):
+    example_structure = thunk()
+
+  def compute_zeros():
+    # TensorFlow's optimization should eliminate the actual computations
+    # done to compute example_structure, using only the (static) shape
+    # information.
+    return nest.map_structure(tf.zeros_like, example_structure)
+
+  # This trick of using cross_replica_sum with tensors of zeros is
+  # obviously wasteful in terms of commmunication. A better solution would
+  # involve only communicating the tensors from replicas where `include_me`
+  # was True.
+  return cross_replica_sum(
+      tf.cond(include_me, thunk, compute_zeros, strict=True), name=name)
 
 
 def get_replica_id():
   """Returns an id number for the current replica, counting from 0."""
   # This code is based on TensorTracer._add_replica_id_to_graph().
 
-  # I'm assuming replicas and shards are always equal until someone tells me
-  # different.
-  num_replicas = get_num_tpu_shards()
+  num_replicas = get_num_replicas()
 
   if not num_replicas:
     return None
 
   with tf.control_dependencies(None):
     # Uses None as dependency to run outside of TPU graph rewrites.
-    return tpu_ops.tpu_replicated_input(
-        list(range(num_replicas)),
-        name="replica_id")
+    return tpu_ops.tpu_replicated_input(list(range(num_replicas)),
+                                        name="replica_id")
 
 
 def ensure_sequence(obj):

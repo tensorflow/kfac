@@ -48,15 +48,16 @@ def make_fisher_estimator(placement_strategy=None, **kwargs):
     An instance of class which inherits from `FisherEstimator` and the mixin
     which implements specific placement strategy. See,
     `FisherEstimatorRoundRobin` which inherits from `FisherEstimator` and
-    `RoundRobinPlacementMixin`.
+    `RoundRobinPlacementMixin`, as an example.
 
   Raises:
-    ValueError: If the `placement_strategy` is not equal to 'round_robin'.
+    ValueError: If the `placement_strategy` argument is not one of the
+    recognized options.
   """
   if placement_strategy in [None, "round_robin"]:
     return FisherEstimatorRoundRobin(**kwargs)
-  elif placement_strategy == "tpu_round_robin":
-    return FisherEstimatorTPURoundRobin(**kwargs)
+  elif placement_strategy == "replica_round_robin":
+    return FisherEstimatorReplicaRoundRobin(**kwargs)
   else:
     raise ValueError(
         "Unimplemented vars and ops placement strategy : {}".format(
@@ -98,7 +99,7 @@ class FisherEstimator(object):
       cov_ema_decay: The decay factor used when calculating the covariance
         estimate moving averages.
       damping: float or 0D Tensor. This quantity times the identity matrix is
-          (approximately) added to the matrix being estimated.
+        (approximately) added to the matrix being estimated.
       layer_collection: Either layer collection object or a function which
         returns an instance to `LayerCollection` object, which holds for the
         Fisher blocks, Kronecker factors, and losses associated with the
@@ -150,7 +151,12 @@ class FisherEstimator(object):
         this will correspond to the standard parameter gradient on the loss.
         (Default: False)
       batch_size: The size of the mini-batch. Only needed when
-        `compute_params_stats` is True. (Default: None)
+         `compute_params_stats` is True. Note that when using data parallelism
+          where the model graph and optimizer are replicated across multiple
+          devices, this should be the per-replica batch size. An example of
+          this is sharded data on the TPU, where batch_size should be set to
+          the total batch size divided by the number of shards. (Default: None)
+
     Raises:
       ValueError: If no losses have been registered with layer_collection.
     """
@@ -395,7 +401,12 @@ class FisherEstimator(object):
 
       scalar = 1. / tf.cast(self._batch_size,
                             dtype=params_stats_unnorm[0].dtype)
-      self._params_stats = utils.sprod(scalar, params_stats_unnorm)
+      params_stats = utils.sprod(scalar, params_stats_unnorm)
+
+      # batch_size should be the per-replica batch size and thus we do a
+      # cross-replica mean instead of a sum here
+      self._params_stats = tuple(utils.cross_replica_mean(tensor)
+                                 for tensor in params_stats)
 
       grads_lists = grads_lists[:idx]
 
@@ -682,7 +693,8 @@ class FisherEstimatorRoundRobin(placement.RoundRobinPlacementMixin,
   pass
 
 
-class FisherEstimatorTPURoundRobin(placement.TPURoundRobinPlacementMixin,
-                                   FisherEstimator):
-  """FisherEstimator which provides round robin sharding strategy."""
+class FisherEstimatorReplicaRoundRobin(
+    placement.ReplicaRoundRobinPlacementMixin,
+    FisherEstimator):
+  """FisherEstimator which provides round robin replica placement strategy."""
   pass

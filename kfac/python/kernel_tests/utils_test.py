@@ -286,11 +286,6 @@ class UtilsTest(tf.test.TestCase):
         mean = utils.cross_replica_mean(tensor)
       self.assertEqual(mean, tensor)
 
-    with tf.Graph().as_default():
-      with self.assertRaises(ValueError):  # Outside of TPU context.
-        tensor = tf.zeros([], dtype=tf.float32)
-        mean = utils.cross_replica_mean(tensor)
-
   def testBatchExecute(self):
     """Ensure batch_execute runs in a round-robin fashion."""
 

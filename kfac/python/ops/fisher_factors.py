@@ -498,8 +498,12 @@ class FisherFactor(object):
     #
     # Other implementations of make_covariance_update_op() that accumulate
     # statistics in other variables should mimic this behavior.
-    if utils.on_tpu():
-      new_cov = utils.cross_replica_mean(new_cov)
+    #
+    # NOTE: communicating this matrix at every iteration is wasteful in the
+    # sense that we might only need fresh copies when we do the inversions.
+    # (Although be careful about factors [e.g. diagonal] or ops
+    # [[e.g. multiply()] that directly use the cov vars instead of the inv vars)
+    new_cov = utils.cross_replica_mean(new_cov)
 
     return new_cov
 
@@ -2154,8 +2158,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       new_cov_dt1 = (tf.add_n(new_cov_dt1_contribs) / float(self._num_towers))
 
       # See comments in FisherFactor.make_covariance_update_op() for details.
-      if utils.on_tpu():
-        new_cov_dt1 = utils.cross_replica_mean(new_cov_dt1)
+      new_cov_dt1 = utils.cross_replica_mean(new_cov_dt1)
 
       op2 = self._acc_cov_dt1.accumulate(
           new_cov_dt1,

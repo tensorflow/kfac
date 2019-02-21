@@ -57,6 +57,22 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     See the docstring for `KfacOptimizer` class (in optimizer.py) for
     complete list of arguments (there are many!).
 
+    Please keep in mind that while the K-FAC code loosely conforms to
+    TensorFlow's Optimizer API it can't be used naively as a "drop in
+    replacement" for basic classes like MomentumOptimizer.  Using it
+    properly with SyncReplicasOptimizer, for example, requires special care.
+
+    See the various examples in the "examples" directory for a guide about
+    how to use K-FAC in various contexts and various systems, like
+    TF-Estimator. See in particular the convnet example.  google/examples
+    also contains an example using TPUEstimator and CrossShardOptimizer.
+
+    Note that not all use cases will work with
+    PeriodicInvCovUpdateKfacOptimizer. Sometimes you will have to use the base
+    KfacOptimizer which provides more fine-grained control over ops.  Other
+    times you might want to use one of the other subclassed optimizers like
+    AsyncInvCovUpdateKfacOpt.
+
     Args:
       invert_every: int. The inversion ops are run once every `invert_every`
         calls to optimizer.minimize, (Default: 10)
