@@ -719,6 +719,13 @@ class KroneckerProductFB(FisherBlock):
     self._output_damping_func = _package_func(lambda: compute_damping()[1],
                                               damping_id + ("ref", 1))
 
+    # Also store the damping op for access to the effective damping later on,
+    # such as when writing to summary.
+    if normalization is not None:
+      self._damping = normalize_damping(damping, normalization)
+    else:
+      self._damping = damping
+
   def register_matpower(self, exp):
     self._input_factor.register_matpower(exp, self._input_damping_func)
     self._output_factor.register_matpower(exp, self._output_damping_func)
@@ -730,6 +737,26 @@ class KroneckerProductFB(FisherBlock):
   def register_cholesky_inverse(self):
     self._input_factor.register_cholesky_inverse(self._input_damping_func)
     self._output_factor.register_cholesky_inverse(self._output_damping_func)
+
+  @property
+  def damping(self):
+    """A copy of the damping op.
+
+    This is not used (and should never be used) in KFAC computations. A valid
+    usage of this property could be to write damping values to the summary.
+
+    Returns:
+      0-D Tensor.
+    """
+    return self._damping
+
+  @property
+  def input_factor(self):
+    return self._input_factor
+
+  @property
+  def output_factor(self):
+    return self._output_factor
 
   @property
   def _renorm_coeff(self):
