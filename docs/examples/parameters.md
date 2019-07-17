@@ -1,6 +1,13 @@
 # K-FAC Parameters.
 
-[TOC]
+## Table of Contents
+  * [Damping](#damping)
+  * [Learning Rate](#learning-rate)
+  * [Subsample covariance computation](#subsample-covariance-computation)
+  * [KFAC norm constraint](#kfac-norm-constraint)
+  * [Covariance decay](#covariance-decay)
+  * [Train batch size](#train-batch-size)
+<br>
 
 We list below various parameters which can be tuned to improve training and run
 time performance of K-FAC.

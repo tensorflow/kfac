@@ -1,6 +1,10 @@
 # Automatic tuning of damping parameter.
 
-[TOC]
+## Table of Contents
+  * [1. Cached Reader](#1-cached-reader)
+  * [2. Build optimizer and set damping parameters](#2-build-optimizer-and-set-damping-parameters)
+  * [TIPS:](#tips)
+<br>
 
 The [KFAC damping parameter][kfac_damp] can be auto tuned using
 Levenberg-Marquardt (LM) algorithm. For a detailed description of the algorithm

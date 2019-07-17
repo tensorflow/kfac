@@ -7,7 +7,10 @@ second-order optimization method, in TensorFlow. When applied to feedforward and
 convolutional neural networks, K-FAC can converge much faster (`>3.5x`) and with
 fewer iterations (`>14x`) than SGD with Momentum.
 
-[TOC]
+## Table of Contents
+  * [What is K-FAC?](#what-is-k-fac)
+  * [Why should I use K-FAC?](#why-should-i-use-k-fac)
+  * [How do I use K-FAC?](#how-do-i-use-k-fac)
 
 ## What is K-FAC?
 

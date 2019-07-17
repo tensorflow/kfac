@@ -1,6 +1,11 @@
 # Distributed Training
 
-[TOC]
+## Table of Contents
+  * [Register the layers](#register-the-layers)
+  * [Build the optimizer](#build-the-optimizer)
+  * [Fit the model](#fit-the-model)
+  * [TIPS](#tips)
+<br>
 
 This example showcases how to use K-FAC in a distributed setting using
 `SyncReplicas` optimizer. While most methods benefit from increased compute,

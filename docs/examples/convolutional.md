@@ -1,6 +1,12 @@
 # Convolutional
 
-[TOC]
+## Table of Contents
+  * [Build the Model](#build-the-model)
+  * [Register the layers and loss](#register-the-layers-and-loss)
+  * [Build the optimizer](#build-the-optimizer)
+  * [Fit the model](#fit-the-model)
+  * [TIPS](#tips)
+<br>
 
 K-FAC needs to know about the structure of your model in order to effectively
 optimize it. In particular, it needs to know about:
