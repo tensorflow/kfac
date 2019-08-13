@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -61,6 +61,7 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
         damping=100.,
         layer_collection=layers,
         momentum=0.9,
+        num_burnin_steps=0,
         placement_strategy="round_robin")
     _construct_layer_collection(layers, [logits], tf.trainable_variables())
 

@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,7 +62,10 @@ def load_mnist_as_tensors(flatten_images=True):
   images = images.astype('float32')
   labels = labels.astype('int32')
 
-  images /= 255
+  images /= 255.
+
+  images = tf.constant(images)
+  labels = tf.constant(labels)
 
   return images, labels, num_examples
 
@@ -77,7 +80,7 @@ def load_mnist_as_dataset(flatten_images=True):
   Returns:
     dataset, num_examples, where dataset is a Dataset object containing the
     whole MNIST training dataset and num_examples is the number of examples
-    in the MNIST dataset (should be 55000).
+    in the MNIST dataset (should be 60000).
   """
   images, labels, num_examples = load_mnist_as_tensors(
       flatten_images=flatten_images)

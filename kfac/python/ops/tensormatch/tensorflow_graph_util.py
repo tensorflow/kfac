@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,11 @@ from __future__ import print_function
 # Dependency imports
 import six
 import tensorflow as tf
+
+from tensorflow.python.framework import ops as tf_ops
 from tensorflow.python.ops import resource_variable_ops
+
+from kfac.python.ops import utils
 
 
 def is_op(node):
@@ -29,14 +33,18 @@ def is_op(node):
 
 
 def is_tensor(node):
-  return isinstance(node, (tf.Tensor, tf.Variable,
-                           resource_variable_ops.ResourceVariable))
+  # return (isinstance(node, (tf.Tensor, tf.Variable))
+  #         or resource_variable_ops.is_resource_variable(node))
+  return tf_ops.is_dense_tensor_like(node)
 
 
 def is_var(node):
   if not is_tensor(node):
     return False
   if node.op.type.startswith('Variable'):
+    return True
+  if ((resource_variable_ops.is_resource_variable(node) or
+       utils.is_reference_variable(node))):
     return True
   if node.dtype == tf.resource and node.op.type == 'VarHandleOp':
     return True

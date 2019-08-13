@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -188,18 +188,18 @@ class CurvatureMatrixVectorProductComputer(object):
         grad_ys=vecs,
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
-  def multiply_generalized_gauss_newton(self, vecs):
+  def multiply_ggn(self, vecs):
     """Multiply vecs by generalized Gauss-Newton of total loss."""
     jacobian_vecs = self._multiply_jacobian(vecs)
     loss_ggn_jacobian_vecs = self._multiply_loss_ggn(jacobian_vecs)
     return self._multiply_jacobian_transpose(loss_ggn_jacobian_vecs)
 
-  def multiply_generalized_gauss_newton_factor_transpose(self, vecs):
+  def multiply_ggn_factor_transpose(self, vecs):
     """Multiply vecs by transpose of factor of GGN of total loss."""
     jacobian_vecs = self._multiply_jacobian(vecs)
     return self._multiply_loss_ggn_factor_transpose(jacobian_vecs)
 
-  def multiply_generalized_gauss_newton_factor(self, loss_inner_vecs):
+  def multiply_ggn_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of GGN of total loss."""
     ggn_factor_transpose_vecs = (
         self._multiply_loss_ggn_factor(loss_inner_vecs))
@@ -217,12 +217,12 @@ class CurvatureMatrixVectorProductComputer(object):
     return tuple(loss.fisher_factor_inner_static_shape for loss in self._losses)
 
   @property
-  def generalized_gauss_newton_factor_inner_shapes(self):
+  def ggn_factor_inner_shapes(self):
     """Shapes required by multiply_generalized_gauss_newton_factor."""
     return tuple(loss.ggn_factor_inner_shape for loss in self._losses)
 
   @property
-  def generalized_gauss_newton_factor_inner_static_shapes(self):
+  def ggn_factor_inner_static_shapes(self):
     """Shapes required by multiply_generalized_gauss_newton_factor."""
     return tuple(loss.ggn_factor_inner_static_shape
                  for loss in self._losses)

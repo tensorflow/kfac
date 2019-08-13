@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,16 +14,17 @@
 # ==============================================================================
 """Train a ConvNet on MNIST using K-FAC.
 
-This library fits a 5-layer ConvNet on MNIST using K-FAC. The model has the
-following structure,
+This library demonstrates how to use K-FAC to train a 5-layer ConvNet on MNIST
+using K-FAC.
 
-- Conv Layer: 5x5 kernel, 16 output channels.
-- Max Pool: 3x3 kernel, stride 2.
-- Conv Layer: 5x5 kernel, 16 output channels.
-- Max Pool: 3x3 kernel, stride 2.
-- Linear: 10 output dims.
+Note that this example is basically untuned and is not meant to work as an
+actual demonstration of the power of the method. It may not even converge. It
+merely demonstrates the how to set up K-FAC to run under the various standard
+modes of operation in Tensorflow, like SyncReplicas, Estimator, etc.
 
-After 3k~6k steps, this should reach perfect accuracy on the training set.
+For an example of the method tuned properly and working well, see for example
+the autoencoder_mnist.py example, which replicates the exact experiment from
+the original K-FAC paper.
 """
 
 from __future__ import absolute_import
@@ -185,7 +186,9 @@ def build_model(examples,
       tf.nn.sparse_softmax_cross_entropy_with_logits(
           labels=labels, logits=logits))
   accuracy = tf.reduce_mean(
-      tf.cast(tf.equal(labels, tf.argmax(logits, axis=1)), dtype=tf.float32))
+      tf.cast(tf.equal(tf.cast(labels, dtype=tf.int32),
+                       tf.argmax(logits, axis=1, output_type=tf.int32)),
+              dtype=tf.float32))
 
   with tf.device("/cpu:0"):
     tf.summary.scalar("loss", loss)
@@ -811,9 +814,9 @@ def train_mnist_estimator(num_epochs, use_fake_data=False):
         learning_rate=tf.train.exponential_decay(
             0.00002, global_step, 10000, 0.5, staircase=True),
         cov_ema_decay=0.95,
-        damping=0.0001,
+        damping=0.001,
         layer_collection=layer_collection,
-        momentum=0.99)
+        momentum=0.9)
 
     (cov_update_thunks,
      inv_update_thunks) = optimizer.make_vars_and_create_op_thunks()

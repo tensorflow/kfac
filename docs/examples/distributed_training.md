@@ -1,11 +1,21 @@
 # Distributed Training
 
-[TOC]
+## Table of Contents
+
+*   [Register the layers](#register-the-layers)
+*   [Build the optimizer](#build-the-optimizer)
+*   [Fit the model](#fit-the-model)
+*   [TIPS](#tips)
+    <br>
 
 This example showcases how to use K-FAC in a distributed setting using
-`SyncReplicas` optimizer. While most methods benefit from increased compute,
-K-FAC particularly shines as the number of workers (and, in turn, batch size)
-increases.
+`SyncReplicas` optimizer. If you are interested in using
+`tf.distribute.Strategy`, we support `MirroredStrategy` and `TPUStrategy`, with
+an example for `TPUStrategy` [here][tpu_strategy_example]. While most methods
+benefit from increased compute, K-FAC particularly shines as the number of
+workers (and, in turn, batch size) increases.
+
+[here][https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/KFAC_vs_Adam_on_CIFAR10_TPU.ipynb]
 
 **Note:** This tutorial extends the single-machine
 [Convolutional example][conv_ex] to distributed training. It is highly

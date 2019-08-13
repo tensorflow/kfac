@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -110,6 +110,7 @@ def compute_pi_adjusted_damping(left_cov, right_cov, damping):
 
   if PI_TYPE == PI_TRACENORM_NAME:
     pi = compute_pi_tracenorm(left_cov, right_cov)
+    damping = tf.cast(damping, dtype=pi.dtype)
     return (damping * pi, damping / pi)
 
   elif PI_TYPE == PI_OFF_NAME:
@@ -272,34 +273,9 @@ class FisherBlock(object):
     pass
 
 
+@six.add_metaclass(abc.ABCMeta)
 class FullFB(FisherBlock):
-  """FisherBlock using a full matrix estimate (no approximations).
-
-  FullFB uses a full matrix estimate (no approximations), and should only ever
-  be used for very low dimensional parameters.
-
-  Note that this uses the naive "square the sum estimator", and so is applicable
-  to any type of parameter in principle, but has very high variance.
-  """
-
-  def __init__(self, layer_collection, params):
-    """Creates a FullFB block.
-
-    Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
-      params: The parameters of this layer (Tensor or tuple of Tensors).
-    """
-    self._batch_sizes = []
-    self._params = params
-
-    super(FullFB, self).__init__(layer_collection)
-
-  def instantiate_factors(self, grads_list, damping):
-    self._damping_func = _package_func(lambda: damping, (damping,))
-
-    self._factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullFactor, (grads_list, self._batch_size))
+  """Base class for blocks that use full matrix representations (no approx)."""
 
   def register_matpower(self, exp):
     self._factor.register_matpower(exp, self._damping_func)
@@ -330,6 +306,35 @@ class FullFB(FisherBlock):
   def full_fisher_block(self):
     """Explicitly constructs the full Fisher block."""
     return self._factor.get_cov_as_linear_operator().to_dense()
+
+
+class NaiveFullFB(FullFB):
+  """FisherBlock using a full matrix estimate (no approximations).
+
+  NaiveFullFB uses a full matrix estimate (no approximations), and should only
+  ever be used for very low dimensional parameters.
+
+  Note that this uses the naive "square the sum estimator", and so is applicable
+  to any type of parameter in principle, but has very high variance.
+  """
+
+  def __init__(self, layer_collection, params):
+    """Creates a NaiveFullFB block.
+
+    Args:
+      layer_collection: The LayerCollection object which owns this block.
+      params: The parameters of this layer (Tensor or tuple of Tensors).
+    """
+    self._batch_sizes = []
+    self._params = params
+
+    super(NaiveFullFB, self).__init__(layer_collection)
+
+  def instantiate_factors(self, grads_list, damping):
+    self._damping_func = _package_func(lambda: damping, (damping,))
+
+    self._factor = self._layer_collection.make_or_get_factor(
+        fisher_factors.NaiveFullFactor, (grads_list, self._batch_size))
 
   def tensors_to_compute_grads(self):
     return self._params
@@ -404,8 +409,7 @@ class NaiveDiagonalFB(DiagonalFB):
     """Creates a NaiveDiagonalFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: The parameters of this layer (Tensor or tuple of Tensors).
     """
     self._params = params
@@ -551,9 +555,9 @@ class FullyConnectedDiagonalFB(InputOutputMultiTower, DiagonalFB):
     """Creates a FullyConnectedDiagonalFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
-      has_bias: Whether the component Kronecker factors have an additive bias.
+      layer_collection: The LayerCollection object which owns this block.
+      has_bias: bool. If True, estimates Fisher with respect to a bias
+        parameter as well as the layer's weights.
           (Default: False)
     """
     self._has_bias = has_bias
@@ -606,8 +610,7 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
     """Creates a ConvDiagonalFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: The parameters (Tensor or tuple of Tensors) of this layer. If
         kernel alone, a Tensor of shape [kernel_height, kernel_width,
         in_channels, out_channels]. If kernel and bias, a tuple of 2 elements
@@ -681,6 +684,76 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
     damping_id = (self._num_locations, "mult", "normalize_damping", damping,
                   self._num_locations)
     self._damping_func = _package_func(damping_func, damping_id)
+
+
+class ScaleAndShiftFullFB(InputOutputMultiTower, FullFB):
+  """A FisherBlock class for scale and shift ops that uses no approximations.
+
+  This class estimates the same thing that NaiveFullFB would (when applied
+  to the scale and shift params), but with a lower variance estimator. In
+  particular it uses a "sum the squares estimator", and thus the variance will
+  shrink as 1/batch_size.
+  """
+
+  def __init__(self, layer_collection, broadcast_dim, has_shift=True):
+    """Creates a ScaleAndShiftFullFB block.
+
+    Args:
+      layer_collection: The LayerCollection object which owns this block.
+      broadcast_dim: The dimension of the input up to which broadcasting
+        takes place when the scale and shift are multiplied/added.
+      has_shift: bool. If True, estimates Fisher with respect to a shift
+        parameter as well the scale parameter (which is always included).
+    """
+    self._broadcast_dim = broadcast_dim
+    self._has_shift = has_shift
+
+    super(ScaleAndShiftFullFB, self).__init__(layer_collection)
+
+  def instantiate_factors(self, grads_list, damping):
+
+    inputs, grads_list = self._process_data(grads_list)
+
+    self._factor = self._layer_collection.make_or_get_factor(
+        fisher_factors.ScaleAndShiftFullFactor,
+        (inputs, grads_list, self._broadcast_dim, self._has_shift))
+
+    self._damping_func = _package_func(lambda: damping, (damping,))
+
+
+class ScaleAndShiftDiagonalFB(InputOutputMultiTower, DiagonalFB):
+  """A FisherBlock class for scale and shift ops that uses a diagonal approx.
+
+  This class estimates the same thing that NaiveDiagonalFB would (when applied
+  to the scale and shift params), but with a lower variance estimator. In
+  particular it uses a "sum the squares estimator", and thus the variance will
+  shrink as 1/batch_size.
+  """
+
+  def __init__(self, layer_collection, broadcast_dim, has_shift=True):
+    """Creates a ScaleAndShiftDiagonalFB block.
+
+    Args:
+      layer_collection: The LayerCollection object which owns this block.
+      broadcast_dim: The dimension of the input up to which broadcasting
+        takes place when the scale and shift are multiplied/added.
+      has_shift: bool. If True, estimates Fisher with respect to a shift
+        parameter as well the scale parameter (which is always included).
+    """
+    self._broadcast_dim = broadcast_dim
+    self._has_shift = has_shift
+
+    super(ScaleAndShiftDiagonalFB, self).__init__(layer_collection)
+
+  def instantiate_factors(self, grads_list, damping):
+
+    inputs, grads_list = self._process_data(grads_list)
+
+    self._factor = self._layer_collection.make_or_get_factor(
+        fisher_factors.ScaleAndShiftDiagonalFactor,
+        (inputs, grads_list, self._broadcast_dim, self._has_shift))
+
+    self._damping_func = _package_func(lambda: damping, (damping,))
 
 
 class KroneckerProductFB(FisherBlock):
@@ -826,48 +899,6 @@ class KroneckerProductFB(FisherBlock):
                                                         right_factor)
 
 
-class EmbeddingKFACFB(InputOutputMultiTower, KroneckerProductFB):
-  """K-FAC FisherBlock for embedding layers.
-
-  This FisherBlock is similar to FullyConnectedKFACBasicFB, except that its
-  input factor is approximated by a diagonal matrix. In the case that each
-  example references exactly one embedding, this approximation is exact.
-
-  Does not support bias parameters.
-  """
-
-  def __init__(self, layer_collection, vocab_size):
-    """Creates a EmbeddingKFACFB block.
-
-    Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
-      vocab_size: int. Size of vocabulary for this embedding layer.
-    """
-    self._vocab_size = vocab_size
-
-    super(EmbeddingKFACFB, self).__init__(layer_collection)
-
-  def instantiate_factors(self, grads_list, damping):
-    """Instantiate Kronecker Factors for this FisherBlock.
-
-    Args:
-      grads_list: List of list of Tensors. grads_list[i][j] is the
-        gradient of the loss with respect to 'outputs' from source 'i' and
-        tower 'j'. Each Tensor has shape [tower_minibatch_size, output_size].
-      damping: 0-D Tensor or float. 'damping' * identity is approximately added
-        to this FisherBlock's Fisher approximation.
-    """
-    inputs, grads_list = self._process_data(grads_list)
-
-    self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.DiagonalKroneckerFactor,
-        ((inputs,), self._vocab_size))
-    self._output_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedKroneckerFactor, (grads_list,))
-    self._setup_damping(damping)
-
-
 class FullyConnectedKFACBasicFB(InputOutputMultiTower, KroneckerProductFB):
   """K-FAC FisherBlock for fully-connected (dense) layers.
 
@@ -875,16 +906,24 @@ class FullyConnectedKFACBasicFB(InputOutputMultiTower, KroneckerProductFB):
   K-FAC paper (https://arxiv.org/abs/1503.05671)
   """
 
-  def __init__(self, layer_collection, has_bias=False):
+  def __init__(self, layer_collection, has_bias=False,
+               diagonal_approx_for_input=False,
+               diagonal_approx_for_output=False):
     """Creates a FullyConnectedKFACBasicFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
-      has_bias: Whether the component Kronecker factors have an additive bias.
-          (Default: False)
+      layer_collection: The LayerCollection object which owns this block.
+      has_bias: bool. If True, estimates Fisher with respect to a bias
+        parameter as well as the layer's weights.
+        (Default: False)
+      diagonal_approx_for_input: Whether to use diagonal approximation for the
+        input Kronecker factor. (Default: False)
+      diagonal_approx_for_output: Whether to use diagonal approximation for the
+        output Kronecker factor. (Default: False)
     """
     self._has_bias = has_bias
+    self._diagonal_approx_for_input = diagonal_approx_for_input
+    self._diagonal_approx_for_output = diagonal_approx_for_output
 
     super(FullyConnectedKFACBasicFB, self).__init__(layer_collection)
 
@@ -900,12 +939,24 @@ class FullyConnectedKFACBasicFB(InputOutputMultiTower, KroneckerProductFB):
     """
     inputs, grads_list = self._process_data(grads_list)
 
-    self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedKroneckerFactor,
-        ((inputs,), self._has_bias))
-    self._output_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedKroneckerFactor,
-        (grads_list,))
+    if self._diagonal_approx_for_input:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.DiagonalKroneckerFactor,
+          ((inputs,), self._has_bias))
+    else:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.FullyConnectedKroneckerFactor,
+          ((inputs,), self._has_bias))
+
+    if self._diagonal_approx_for_output:
+      self._output_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.DiagonalKroneckerFactor,
+          (grads_list,))
+    else:
+      self._output_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.FullyConnectedKroneckerFactor,
+          (grads_list,))
+
     self._setup_damping(damping)
 
 
@@ -948,8 +999,7 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
     """Creates a ConvKFCBasicFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: The parameters (Tensor or tuple of Tensors) of this layer. If
         kernel alone, a Tensor of shape [..spatial_filter_shape..,
         in_channels, out_channels]. If kernel and bias, a tuple of 2 elements
@@ -1041,8 +1091,7 @@ class DepthwiseConvDiagonalFB(ConvDiagonalFB):
     """Creates a DepthwiseConvKFCBasicFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: Tensor of shape [filter_height, filter_width, in_channels,
         channel_multiplier].
       strides: List of 4 ints. Strides along all dimensions.
@@ -1111,8 +1160,7 @@ class DepthwiseConvKFCBasicFB(ConvKFCBasicFB):
     """Creates a DepthwiseConvKFCBasicFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: Tensor of shape [filter_height, filter_width, in_channels,
         channel_multiplier].
       strides: List of 4 ints. Strides along all dimensions.
@@ -1321,131 +1369,9 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
 
   def __init__(self, num_uses=None, *args, **kwargs):
     self._num_uses = num_uses
-    self._tensors_to_compute_grads = []
-    self._has_transpose_use = False
-    self._transpose = None
     super(InputOutputMultiTowerMultiUse, self).__init__(*args, **kwargs)
 
-  def tensors_to_compute_grads(self):
-    """Tensors to compute derivative of loss with respect to."""
-    return tuple(self._tensors_to_compute_grads)
-
-  def register_additional_tower(self, inputs, outputs, transpose=None):
-    if isinstance(inputs, (tuple, list)):
-      if transpose is None:
-        transpose = [False for input in inputs]
-
-      if len(inputs) != len(outputs) or len(inputs) != len(transpose):
-        raise ValueError(
-            "Length of inputs/outputs/transpose must be consistent. Actual "
-            "len(inputs)={}, len(outputs)={}, len(transpose)={}".format(
-                len(inputs), len(outputs), len(transpose)))
-
-      # Check consistency of "transpose" settings between different towers.
-      if self._transpose is None:
-        self._transpose = transpose
-      elif self._transpose != transpose:
-        raise ValueError(
-            "Transpose settings must be consistent across towers. Came across "
-            "inconsistent transpose lists: {} vs {}".format(
-                self._transpose, transpose))
-
-      inputs_ = []
-      outputs_ = []
-
-      # Build the actual inputs and outputs according to transpose settings.
-      # (If transpose is True for a pair of input/output, the input/output needs
-      # to be switch-placed.)
-      for i in range(len(inputs)):
-        if transpose is None or transpose[i] == False:
-          inputs_.append(inputs[i])
-          outputs_.append(outputs[i])
-        else:
-          inputs_.append(outputs[i])
-          outputs_.append(inputs[i])
-          self._has_transpose_use = True
-    else:
-      # If inputs and outputs are single tensors of size [batch_size * num_uses,
-      # units], then nothing needs to be transposed.
-      if transpose is not None:
-        raise ValueError("transpose should be None for single tensor inputs and"
-                         " outputs. Actual: {}".format(transpose))
-      inputs_ = inputs
-      outputs_ = outputs
-
-    self._inputs.append(inputs_)
-    self._outputs.append(outputs_)
-    self._tensors_to_compute_grads.append(outputs)
-
-  def _group_inputs_outputs(self, grads_list):
-    """ Regroup the tensors that contribute to the input and output factors.
-
-    Typically, the input factor is computed from input units ("inputs" in
-    register_additional_tower), and the output factor is computed from estimated
-    gradients of the output units ("outputs" in register_additional_tower). In
-    this typical case, (self._inputs, grads_list) would be returned.
-
-    self._inputs is a list of list of Tensors. The first index
-    is tower, the second is use/time-step. grads_list, meanwhile, is a list
-    over sources of such lists of lists.
-
-    In the atypical case where self._transpose is true for some uses in
-    register_additional_tower, we would need to look up from
-    self._tensors_to_compute_grads which tensors in inputs/outputs should be
-    replaced with their gradients, and return the appropriate updated
-    (inputs, outputs).
-
-    Multiple sources in grads_list is only supported for the typical case
-    described above. To avoid complications caused by multiple sources in
-    grads_list, for now only the single source gradient estimates is supported
-    when "transpose" is true for any inputs.
-
-    Args:
-      grads_list: A list of list of list of tensors. The first index is source,
-        the second index is tower, and the third index is use/time-step. Each
-        tensor is the gradient estimate of a tensor in self._inputs or
-        self._outputs. In the typical case described above, grads_list only
-        contains grads of tensors in self._outputs, since
-        self._tensors_to_compute_grads should contain only and all of tensors
-        in self._outputs.
-
-    Returns:
-      inputs: A list of list of tensors. These are the tensors contributing to
-        the input Kronecker factor for this Fisher block. It is in the same
-        format as self._inputs, where the first index is tower, and the second
-        is use/time-step.
-      outputs: A list of list of list of tensors. These are the tensors
-        contributing to the output Kronecker factor for this Fisher block. It
-        is in the same format as grads_list, where first index is source, second
-        is tower, and third is use/time-step.
-    """
-    # For the typical case described above.
-    if self._has_transpose_use is False:
-      return self._inputs, grads_list
-
-    # Only supporting single source case for now.
-    if len(grads_list) != 1:
-      raise ValueError("Multiple sources is not supported when transpose is "
-                       "True for any set of input/output.")
-
-    # Build a new inputs and outputs for making Fisher factors. Replace
-    # tensors in tensors_to_compute_grads with their grads.
-    inputs = nest.flatten(self._inputs)
-    outputs = nest.flatten(self._outputs)
-
-    for tensor, grad in zip(nest.flatten(self._tensors_to_compute_grads),
-                            nest.flatten(grads_list)):
-      if tensor in inputs:
-        inputs[inputs.index(tensor)] = grad
-      else:
-        outputs[outputs.index(tensor)] = grad
-
-    inputs = nest.pack_sequence_as(self._inputs, inputs)
-    outputs = nest.pack_sequence_as(grads_list, outputs)
-
-    return inputs, outputs
-
-  def _process_data(self, grads_list=None):
+  def _process_data(self, grads_list):
     """Process temporal/multi-use data into the format used by the factors.
 
     This function takes inputs and grads_lists data and processes it into
@@ -1459,8 +1385,8 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
 
     The second possible data format is where self._inputs is a Tensor with
     uses/times-steps folded into the batch dimension.  i.e. it is a Tensor
-    of shape [num_uses * size_batch, ...] which represents a reshape of a
-    Tensor of shape [num_uses, size_batch, ...].  And similarly grads_list is
+    of shape [num_uses * batch_size, ...] which represents a reshape of a
+    Tensor of shape [num_uses, batch_size, ...].  And similarly grads_list is
     a list over sources of such Tensors.
 
     There are two possible formats which inputs and grads_list are transformed
@@ -1495,10 +1421,13 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
       ValueError: If the given/initial format of self._inputs and grads_list
         isn't recognized, or doesn't agree with self._num_uses.
     """
-    inputs, grads_list = self._group_inputs_outputs(grads_list)
+    inputs = self._inputs
 
+    # The first data format.
     if isinstance(inputs[0], (list, tuple)):
+
       num_uses = len(inputs[0])
+
       if self._num_uses is not None and self._num_uses != num_uses:
         raise ValueError("num_uses argument doesn't match length of inputs.")
       else:
@@ -1530,12 +1459,17 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
       else:
         raise ValueError("Global config variable TOWER_STRATEGY must be one of "
                          "'concat' or 'separate'.")
+    # The second data format
     else:
       inputs = tuple(inputs)
 
     # Now we perform the analogous processing for grads_list
+
+    # The first data format.
     if isinstance(grads_list[0][0], (list, tuple)):
+
       num_uses = len(grads_list[0][0])
+
       if self._num_uses is not None and self._num_uses != num_uses:
         raise ValueError("num_uses argument doesn't match length of outputs, "
                          "or length of outputs is inconsistent with length of "
@@ -1574,6 +1508,8 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
       else:
         raise ValueError("Global config variable TOWER_STRATEGY must be one of "
                          "'concat' or 'separate'.")
+
+    # The second data format.
     else:
       grads_list = tuple(tuple(grads) for grads in grads_list)
 
@@ -1595,19 +1531,27 @@ class FullyConnectedMultiIndepFB(InputOutputMultiTowerMultiUse,
     https://openreview.net/pdf?id=HyMTkQZAb
   """
 
-  def __init__(self, layer_collection, has_bias=False, num_uses=None):
+  def __init__(self, layer_collection, has_bias=False, num_uses=None,
+               diagonal_approx_for_input=False,
+               diagonal_approx_for_output=False):
     """Creates a FullyConnectedMultiIndepFB block.
 
     Args:
       layer_collection: LayerCollection instance.
       has_bias: bool. If True, estimates Fisher with respect to a bias
-        parameter as well as the layer's parameters.
+        parameter as well as the layer's weights. (Default: False)
       num_uses: int or None. Number of uses of the layer in the model's graph.
         Only required if the data is formatted with uses/time folded into the
         batch dimension (instead of uses/time being a list dimension).
         (Default: None)
+      diagonal_approx_for_input: Whether to use diagonal approximation for the
+        input Kronecker factor. (Default: False)
+      diagonal_approx_for_output: Whether to use diagonal approximation for the
+        output Kronecker factor. (Default: False)
     """
     self._has_bias = has_bias
+    self._diagonal_approx_for_input = diagonal_approx_for_input
+    self._diagonal_approx_for_output = diagonal_approx_for_output
 
     super(FullyConnectedMultiIndepFB, self).__init__(
         layer_collection=layer_collection,
@@ -1616,12 +1560,23 @@ class FullyConnectedMultiIndepFB(InputOutputMultiTowerMultiUse,
   def instantiate_factors(self, grads_list, damping):
     inputs, grads_list = self._process_data(grads_list)
 
-    self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedMultiKF,
-        ((inputs,), self._num_uses, self._has_bias))
+    if self._diagonal_approx_for_input:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.DiagonalMultiKF,
+          ((inputs,), self._num_uses, self._has_bias))
+    else:
+      self._input_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.FullyConnectedMultiKF,
+          ((inputs,), self._num_uses, self._has_bias))
 
-    self._output_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedMultiKF, (grads_list, self._num_uses))
+    if self._diagonal_approx_for_output:
+      self._output_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.DiagonalMultiKF,
+          (grads_list, self._num_uses))
+    else:
+      self._output_factor = self._layer_collection.make_or_get_factor(
+          fisher_factors.FullyConnectedMultiKF,
+          (grads_list, self._num_uses))
 
     self._setup_damping(damping, normalization=self._num_uses)
 
@@ -1652,8 +1607,7 @@ class ConvKFCBasicMultiIndepFB(InputOutputMultiTowerMultiUse,
     """Creates a ConvKFCBasicMultiIndepFB block.
 
     Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-          Fisher information matrix to which this FisherBlock belongs.
+      layer_collection: The LayerCollection object which owns this block.
       params: The parameters (Tensor or tuple of Tensors) of this layer. If
         kernel alone, a Tensor of shape [..spatial_filter_shape..,
         in_channels, out_channels]. If kernel and bias, a tuple of 2 elements
@@ -1698,12 +1652,13 @@ class ConvKFCBasicMultiIndepFB(InputOutputMultiTowerMultiUse,
                                              self._padding)
 
     self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.ConvInputKroneckerFactor,
-        (inputs, self._filter_shape, self._padding, self._strides,
-         self._dilation_rate, self._data_format, self._extract_patches_fn,
-         self._has_bias))
+        fisher_factors.ConvInputMultiKF,
+        (inputs, self._filter_shape, self._padding, self._num_uses,
+         self._strides, self._dilation_rate, self._data_format,
+         self._extract_patches_fn, self._has_bias, self._num_uses))
     self._output_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.ConvOutputKroneckerFactor, (grads_list,))
+        fisher_factors.ConvOutputMultiKF, (grads_list, self._num_uses,
+                                           self._data_format))
 
     self._setup_damping(damping,
                         normalization=(self._num_locations * self._num_uses))
@@ -1711,62 +1666,6 @@ class ConvKFCBasicMultiIndepFB(InputOutputMultiTowerMultiUse,
   @property
   def _renorm_coeff(self):
     return self._num_locations * self._num_uses
-
-
-class EmbeddingKFACMultiIndepFB(InputOutputMultiTowerMultiUse,
-                                KroneckerProductFB):
-  """K-FAC FisherBlock for embedding layers used multiple times in the graph.
-
-  Similar to EmbeddingKFACFB, with two differences. First, this version supports
-  multiple uses of the parameter within a single model. These uses could
-  correspond to time steps in an RNN architecture, but they don't have to.
-  Second, the input could be sparse or dense. Sparse inputs are input ids;
-  dense inputs are the one-hot vectors or their equivalent.
-
-  Does not support bias parameters.
-  """
-
-  def __init__(self, layer_collection, vocab_size=None, num_uses=None):
-    """Creates a EmbeddingKFACMultiIndepFB block.
-
-    Args:
-      layer_collection: The collection of all layers in the K-FAC approximate
-        Fisher information matrix to which this FisherBlock belongs.
-      vocab_size: int or None. Size of vocabulary for this embedding layer.
-        Should be None for dense inputs.
-      num_uses: int or None. Number of uses of the layer in the model's graph.
-        Only required if the data is formatted with time folded into the batch
-        dimension (instead of time being a list dimension). (Default: None)
-    """
-    self._vocab_size = vocab_size
-
-    super(EmbeddingKFACMultiIndepFB, self).__init__(
-        layer_collection=layer_collection,
-        num_uses=num_uses)
-
-  def instantiate_factors(self, grads_list, damping):
-    """Instantiate Kronecker Factors for this FisherBlock.
-
-    Args:
-      grads_list: List of list of list of Tensors. grads_list[i][j][k] is the
-        gradient of the loss with respect to 'outputs' from source 'i',
-        tower/mini-batch 'j', and use/time-step 'k'. Each Tensor has shape
-        [tower_minibatch_size, output_size].
-      damping: 0-D Tensor or float. 'damping' * identity is approximately added
-        to this FisherBlock's Fisher approximation.
-    """
-    inputs, grads_list = self._process_data(grads_list)
-
-    self._input_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.DiagonalKroneckerFactor,
-        ((inputs,), self._vocab_size))
-    self._output_factor = self._layer_collection.make_or_get_factor(
-        fisher_factors.FullyConnectedMultiKF, (grads_list, self._num_uses))
-    self._setup_damping(damping, normalization=self._num_uses)
-
-  @property
-  def _renorm_coeff(self):
-    return float(self._num_uses)
 
 
 class SeriesFBApproximation(object):
@@ -1799,7 +1698,8 @@ class FullyConnectedSeriesFB(InputOutputMultiTowerMultiUse,
     Args:
       layer_collection: The collection of all layers in the K-FAC approximate
         Fisher information matrix to which this FisherBlock belongs.
-      has_bias: Whether the layer includes a bias parameter.
+      has_bias: bool. If True, estimates Fisher with respect to a bias
+        parameter as well as the layer's weights.
       num_uses: int or None. Number of time-steps over which the layer
         is used. Only required if the data is formatted with time folded into
         the batch dimension (instead of time being a list dimension).

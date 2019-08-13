@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -272,20 +272,6 @@ class UtilsTest(tf.test.TestCase):
       np_inv = np.linalg.inv(x + damp * np.eye(size))
       self.assertAllClose(sess.run(tf_inv), np_inv)
 
-  def testCrossReplicaMean(self):
-    """Ensures that cross_replica_mean() executes only when num_shards > 1."""
-    with tf.Graph().as_default():
-      with tpu_function.tpu_shard_context(4):
-        tensor = tf.zeros([], dtype=tf.float32)
-        mean = utils.cross_replica_mean(tensor)
-      self.assertNotEqual(mean, tensor)
-
-    with tf.Graph().as_default():
-      with tpu_function.tpu_shard_context(1):
-        tensor = tf.zeros([], dtype=tf.float32)
-        mean = utils.cross_replica_mean(tensor)
-      self.assertEqual(mean, tensor)
-
   def testBatchExecute(self):
     """Ensure batch_execute runs in a round-robin fashion."""
 
@@ -405,48 +391,44 @@ class AccumulatorVariableTest(tf.test.TestCase):
 
   def test_assign_to_var(self):
     var_shape = (2, 3)
-    var = tf.get_variable(
-        shape=var_shape,
-        name='orig_var',
-        dtype=tf.float32,
-        initializer=tf.zeros_initializer())
     acc_var = utils.AccumulatorVariable(
-        name='test_acc_var', var=var)
+        name='test_acc_var', dtype=tf.float32, shape=var_shape)
     values = [
-        3. * tf.ones(shape=var.shape), 7. * tf.ones(shape=var.shape),
-        11. * tf.ones(shape=var.shape)
+        3. * tf.ones(shape=var_shape), 7. * tf.ones(shape=var_shape),
+        11. * tf.ones(shape=var_shape)
     ]
     acc_ops = []
     accc_ops_after_reset = []
     for value in values:
-      acc_ops.append(
-          acc_var.accumulate(value, num_steps_for_update=len(values)))
+      acc_ops.append(acc_var.accumulate(value))
 
     for value in values[:2]:
-      accc_ops_after_reset.append(
-          acc_var.accumulate(value, num_steps_for_update=2))
+      accc_ops_after_reset.append(acc_var.accumulate(value))
 
     init_op = tf.global_variables_initializer()
     with self.test_session() as sess:
+
       sess.run([init_op])
+
       for acc_op in acc_ops:
         sess.run(acc_op)
 
-      acc_value, acc_var_value = sess.run([var, acc_var.value])
-      self.assertAllEqual(acc_value, 7. * np.ones(shape=var_shape))
-      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+      acc_var_value = sess.run(acc_var.value)
+
+      self.assertAllEqual(acc_var_value, 7.*np.ones(shape=var_shape))
+
+      sess.run(acc_var.reset())
 
       for acc_op in accc_ops_after_reset:
         sess.run(acc_op)
 
-      acc_value, acc_var_value = sess.run([var, acc_var.value])
-      self.assertAllEqual(acc_value, 5. * np.ones(shape=var_shape))
-      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+      acc_var_value = sess.run(acc_var.value)
+      self.assertAllEqual(acc_var_value, 5. * np.ones(shape=var_shape))
 
   def test_accumulation(self):
     var_shape = (2, 3)
     acc_var = utils.AccumulatorVariable(
-        name='test_acc_var', acc_var_shape=var_shape, acc_var_dtype=tf.float32)
+        name='test_acc_var', shape=var_shape, dtype=tf.float32)
     values = [
         2. * tf.ones(shape=var_shape), 4. * tf.ones(shape=var_shape),
         9. * tf.ones(shape=var_shape)
@@ -455,32 +437,27 @@ class AccumulatorVariableTest(tf.test.TestCase):
     accc_ops_after_reset = []
     for value in values:
       acc_ops.append(
-          acc_var.accumulate(value, num_steps_for_update=len(values)))
+          acc_var.accumulate(value))
 
     for value in values[:2]:
       accc_ops_after_reset.append(
-          acc_var.accumulate(value, num_steps_for_update=2))
+          acc_var.accumulate(value))
 
     init_op = tf.global_variables_initializer()
     with self.test_session() as sess:
       sess.run([init_op])
-      acc_value = None
 
       for acc_op in acc_ops:
         sess.run([acc_op])
 
-      acc_value, acc_var_value = sess.run(
-          [acc_var.accumulated_value, acc_var.value])
-      self.assertAllEqual(acc_value, 5. * np.ones(shape=var_shape))
-      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+      acc_var_value = sess.run(acc_var.read_value_and_reset())
+      self.assertAllEqual(acc_var_value, 5. * np.ones(shape=var_shape))
 
       for acc_op in accc_ops_after_reset:
         sess.run([acc_op])
 
-      acc_value, acc_var_value = sess.run(
-          [acc_var.accumulated_value, acc_var.value])
-      self.assertAllEqual(acc_value, 3. * np.ones(shape=var_shape))
-      self.assertAllEqual(acc_var_value, np.zeros(shape=var_shape))
+      acc_var_value = sess.run(acc_var.value)
+      self.assertAllEqual(acc_var_value, 3. * np.ones(shape=var_shape))
 
 
 if __name__ == '__main__':

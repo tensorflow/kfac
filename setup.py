@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ from setuptools import setup
 
 setup(
     name='kfac',
-    version='0.1.4',
+    version='0.1.5',
     description='K-FAC for TensorFlow',
     author='Google Inc.',
     author_email='no-reply@google.com',
@@ -35,8 +35,8 @@ setup(
         'tensorflow-probability',
     ],
     extras_require={
-        'tensorflow': ['tensorflow>=1.12'],
-        'tensorflow_gpu': ['tensorflow-gpu>=1.12'],
+        'tensorflow': ['tensorflow>=1.14'],
+        'tensorflow_gpu': ['tensorflow-gpu>=1.14'],
         'tests': ['pytest', 'dm-sonnet'],
     },
     classifiers=[

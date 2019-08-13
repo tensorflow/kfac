@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,9 +28,9 @@ from kfac.python.ops import utils as utils
 
 
 def _make_thunk_on_device(func, device):
-  def thunk():
+  def thunk(*args, **kwargs):
     with tf.device(device):
-      return func()
+      return func(*args, **kwargs)
   return thunk
 
 
@@ -170,11 +170,11 @@ class ReplicaRoundRobinPlacementMixin(object):
   """Implements round robin placement strategy for certain ops on replicas.
 
   This placement strategy can be used in certain TPU training systems, where
-  there are multiple "replicas" of the graph, such as in TPUEstimator. The
-  execution of inverse and transformation ops, which by default occurs
-  redundantly on all replicas, are instead distributed over replicas in a round-
-  robin fashion. This is achieved by using tf.cond statements to check the
-  replica id number.
+  there are multiple "replicas" of the graph, such as in TPUEstimator or
+  TF-Replicator. The execution of inverse and transformation ops, which by
+  default occurs redundantly on all replicas, are instead distributed over
+  replicas in a round-robin fashion. This is achieved by using tf.cond
+  statements to check the replica id number.
 
   This placement strategy doesn't need to be used with TPU training, and may
   not work with all possible setups (such as TF Replicator). When it does work
@@ -195,10 +195,9 @@ class ReplicaRoundRobinPlacementMixin(object):
 
     if not utils.is_replicated():
       raise ValueError("This placement mode should only be used with certain "
-                       "kinds of 'replicated' setups, such as TPUEstimator.")
+                       "kinds of 'replicated' setups, such as TPUEstimator "
+                       "or TF-Replicator.")
 
-    self._replica_id = utils.get_replica_id()
-    self._num_replicas = utils.get_num_replicas()
     self._distribute_transformations = distribute_transformations
 
     super(ReplicaRoundRobinPlacementMixin, self).__init__(**kwargs)
@@ -208,9 +207,6 @@ class ReplicaRoundRobinPlacementMixin(object):
 
     Replica placement done in round-robin fashion according to the order of
     the `blocks` property, cycling through the replicas in numerical order.
-
-    In more detail, only one replica will compute each transformation thunk,
-    with the results being shared via utils.cross_replica_partial_sum().
 
     Args:
       thunks: A list of thunks to run. Must be in one to one correspondence
@@ -224,17 +220,7 @@ class ReplicaRoundRobinPlacementMixin(object):
     """
     del params_list
 
-    if self._distribute_transformations:
-
-      def process_thunk(thunk, idx):
-        should_compute_trans = tf.equal(self._replica_id,
-                                        idx % self._num_replicas)
-        return utils.cross_replica_partial_sum(thunk, should_compute_trans)
-
-      return tuple(process_thunk(thunk, idx)
-                   for idx, thunk in enumerate(thunks))
-    else:
-      return tuple(thunk() for thunk in thunks)
+    return utils.map_gather(thunks)
 
   def create_ops_and_vars_thunks(self, scope=None):
     """Create op/var-making thunks with replica placement for inverse ops.
@@ -251,6 +237,8 @@ class ReplicaRoundRobinPlacementMixin(object):
 
     The length of each list is the number of factors and the i-th element of
     each list corresponds to the i-th factor (given by the "factors" property).
+    (Actually, for inv_update_thunks this class in particular returns only one
+    thunk inside inv_update_thunks that updates all the factors.)
 
     Note that the execution of these thunks must happen in a certain
     partial order.  The i-th element of cov_variable_thunks must execute
@@ -279,45 +267,51 @@ class ReplicaRoundRobinPlacementMixin(object):
 
     cov_variable_thunks = cov_variable_thunks_raw
 
-    # cross_replica_mean of the cov values is performed internally in the
-    # FisherFactor classes, so we don't need to do anything for the cov updates
-    # here.
+    # all_averages of cov values are performed internally in the FisherFactor
+    # classes, so we don't need to do anything for the cov updates here.
     cov_update_thunks = cov_update_thunks_raw
-
     inv_variable_thunks = inv_variable_thunks_raw
 
-    # The packaged inv update thunk will execute the inverse update thunk if
-    # should_compute_inv is True, where should_compute_inv =
-    # (self._replica_id == idx % self._num_replicas), and where idx is the
-    # index of the thunk.  It will then call cross_replica_partial_sum (with
-    # include_me = should_compute_inv) on the corresponding inverse variables,
-    # updating said variables with the returned results.
+    # The thunks made here execute the supplied inverse update thunk and then
+    # retrieve the values from the corresponding inverse variables.
+    def make_thunk(inv_update_thunk, inv_vars):
+      def thunk():
+        with tf.control_dependencies([inv_update_thunk()]):
+          return nest.map_structure(tf.identity, inv_vars)
+      return thunk
 
-    def package_inv_update_thunk(inv_update_thunk, idx):
+    # This single thunk calls map_gather to distribute the work, and then
+    # saves the results back to the corresponding inverse variables.
+    def inv_update_thunk():
 
-      should_compute_inv = tf.equal(self._replica_id, idx % self._num_replicas)
+      assert len(inv_update_thunks_raw) == len(self.factors)
 
-      def packaged_inv_update_thunk():
+      # Create a list of factors and thunks that only include the factors
+      # that have inverse variables.  Note that not executing the inverse ops of
+      # those that don't shouldn't matter.
+      factors_and_thunks = tuple(
+          (factor, thunk)
+          for factor, thunk in zip(self.factors, inv_update_thunks_raw)
+          if factor.get_inv_vars())
 
-        maybe_update_inv = tf.cond(should_compute_inv,
-                                   inv_update_thunk, tf.no_op)
+      factors, _ = zip(*factors_and_thunks)
 
-        with tf.control_dependencies([maybe_update_inv]):
-          inv_vars = self.factors[idx].get_inv_vars()
+      thunks = tuple(
+          make_thunk(inv_update_thunk, factor.get_inv_vars())
+          for factor, inv_update_thunk in factors_and_thunks)
 
-          if inv_vars:
-            values = utils.cross_replica_partial_sum(lambda: inv_vars,
-                                                     should_compute_inv)
-            return tf.group(*(var.assign(val)
-                              for val, var in zip(values, inv_vars)))
-          else:
-            return tf.no_op()
+      results = utils.map_gather(thunks)
 
-      return packaged_inv_update_thunk
+      # These assigns save the values back to the variables.
+      ops = (utils.smart_assign(var, val)
+             for factor, result in zip(factors, results)  # pylint: disable=g-complex-comprehension
+             for val, var in zip(result, factor.get_inv_vars()))
+      return tf.group(*ops)
 
-    inv_update_thunks = tuple(
-        package_inv_update_thunk(inv_update_thunk_raw, idx)
-        for idx, inv_update_thunk_raw in enumerate(inv_update_thunks_raw))
+    # Note that we have to return one big inv_update_thunk instead of one for
+    # each factor. This is because utils.map_gather doesn't support returning
+    # thunks (because TFReplicator's map_gather doesn't).
+    inv_update_thunks = [inv_update_thunk]
 
     return (cov_variable_thunks, cov_update_thunks,
             inv_variable_thunks, inv_update_thunks)

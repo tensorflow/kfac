@@ -27,7 +27,9 @@ $ pip install 'kfac[tensorflow]'
 
 ## KFAC DOCS
 
-Please check [KFAC docs][kfac_docs] for detailed description with examples
-of how to use KFAC.
+Please check [KFAC docs][kfac_docs] for a detailed description with examples
+of how to use KFAC. Check the [Keras KFAC docs][keras_docs] for information on
+using KFAC with Keras.
 
 [kfac_docs]: https://github.com/tensorflow/kfac/tree/master/docs/index.md
+[keras_docs]: https://github.com/tensorflow/kfac/tree/master/python/keras/README.md

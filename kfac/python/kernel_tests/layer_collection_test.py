@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -136,12 +136,15 @@ class LayerCollectionTest(tf.test.TestCase):
           padding='SAME',
           inputs=(tf.ones((1, 2, 3, 4)), tf.ones((5, 6, 7, 8))),
           outputs=(tf.ones((1, 1, 1, 5)), tf.ones((2, 2, 2, 10))))
-      lc.register_embedding_multi(
+      lc.register_fully_connected_multi(
           tf.constant((1,)), (tf.constant(2), tf.constant(3)),
-          (tf.constant(4), tf.constant(5)))
-      lc.register_embedding_multi(
+          (tf.constant(4), tf.constant(5)),
+          approx=layer_collection.APPROX_KRONECKER_INDEP_IN_DIAG_NAME)
+      lc.register_fully_connected_multi(
           tf.constant((1,)), (tf.constant(2), tf.constant(3)),
-          (tf.constant(4), tf.constant(5)), transpose=[False, True])
+          (tf.constant(4), tf.constant(5)),
+          dense_inputs=False,
+          approx=layer_collection.APPROX_KRONECKER_INDEP_IN_DIAG_NAME)
 
       self.assertEqual(13, len(lc.get_blocks()))
 
@@ -159,14 +162,14 @@ class LayerCollectionTest(tf.test.TestCase):
     x = tf.get_variable('x', initializer=tf.constant(1,))
     lc = layer_collection.LayerCollection()
     lc.fisher_blocks = {tf.get_variable('y', initializer=tf.constant(1,)): '1'}
-    lc.register_block(x, 'foo')
+    lc._register_block(x, 'foo')
 
   def testShouldRegisterSingleParamRegistered(self):
     x = tf.get_variable('x', initializer=tf.constant(1,))
     lc = layer_collection.LayerCollection()
     lc.fisher_blocks = {x: '1'}
     with self.assertRaises(ValueError) as cm:
-      lc.register_block(x, 'foo')
+      lc._register_block(x, 'foo')
     self.assertIn('already in LayerCollection', str(cm.exception))
 
   def testRegisterSingleParamRegisteredInTuple(self):
@@ -175,7 +178,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc = layer_collection.LayerCollection()
     lc.fisher_blocks = {(x, y): '1'}
     with self.assertRaises(ValueError) as cm:
-      lc.register_block(x, 'foo')
+      lc._register_block(x, 'foo')
     self.assertIn('was already registered', str(cm.exception))
 
   def testRegisterTupleParamNotRegistered(self):
@@ -184,7 +187,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc = layer_collection.LayerCollection()
     lc.fisher_blocks = {tf.get_variable('z', initializer=tf.constant(1,)): '1'}
 
-    lc.register_block((x, y), 'foo')
+    lc._register_block((x, y), 'foo')
     self.assertEqual(set(['1', 'foo']), set(lc.get_blocks()))
 
   def testRegisterTupleParamRegistered(self):
@@ -194,7 +197,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc.fisher_blocks = {(x, y): '1'}
 
     with self.assertRaises(ValueError) as cm:
-      lc.register_block((x, y), 'foo')
+      lc._register_block((x, y), 'foo')
     self.assertIn('already in LayerCollection', str(cm.exception))
 
   def testRegisterTupleParamRegisteredInSuperset(self):
@@ -205,7 +208,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc.fisher_blocks = {(x, y, z): '1'}
 
     with self.assertRaises(ValueError) as cm:
-      lc.register_block((x, y), 'foo')
+      lc._register_block((x, y), 'foo')
     self.assertIn('was already registered', str(cm.exception))
 
   def testRegisterTupleParamSomeRegistered(self):
@@ -216,7 +219,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc.fisher_blocks = {x: MockFisherBlock('1'), z: MockFisherBlock('2')}
 
     with self.assertRaises(ValueError) as cm:
-      lc.register_block((x, y), MockFisherBlock('foo'))
+      lc._register_block((x, y), MockFisherBlock('foo'))
     self.assertIn('was already registered', str(cm.exception))
 
   def testRegisterTupleVarSomeRegisteredInOtherTuples(self):
@@ -228,7 +231,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc.fisher_blocks = {(x, z): '1', (z, w): '2'}
 
     with self.assertRaises(ValueError) as cm:
-      lc.register_block((x, y), 'foo')
+      lc._register_block((x, y), 'foo')
     self.assertIn('was already registered', str(cm.exception))
 
   def testRegisterCategoricalPredictiveDistribution(self):
@@ -403,7 +406,7 @@ class LayerCollectionTest(tf.test.TestCase):
 
     # Fails if reuse requested but no FisherBlock exists.
     lc = layer_collection.LayerCollection()
-    with self.assertRaises(KeyError):
+    with self.assertRaises(ValueError):
       register_fn(lc, reuse=True)
 
   def testRegisterFullyConnectedReuse(self):
@@ -451,7 +454,7 @@ class LayerCollectionTest(tf.test.TestCase):
       lc = layer_collection.LayerCollection()
       lc.register_fully_connected(w, inputs, outputs)
       self.assertEqual(lc.fisher_blocks[w].num_registered_towers, 1)
-      with self.assertRaises(KeyError):
+      with self.assertRaises(ValueError):
         lc.register_fully_connected((w, b), inputs, outputs, reuse=True)
       self.assertNotIn((w, b), lc.fisher_blocks)
       self.assertEqual(lc.fisher_blocks[w].num_registered_towers, 1)
@@ -463,9 +466,9 @@ class LayerCollectionTest(tf.test.TestCase):
       tf.set_random_seed(200)
       lc = layer_collection.LayerCollection()
       key = tf.constant(1)
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((key,), 16))
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((key,), 16))
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((tf.constant(2),), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((key,), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((key,), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((tf.constant(2),), 16))
 
       self.assertEqual(2, len(lc.get_factors()))
       variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
@@ -478,9 +481,9 @@ class LayerCollectionTest(tf.test.TestCase):
       scope = 'Foo'
       lc = layer_collection.LayerCollection(name=scope)
       key = tf.constant(1)
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((key,), 16))
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((key,), 16))
-      lc.make_or_get_factor(fisher_factors.FullFactor, ((tf.constant(2),), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((key,), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((key,), 16))
+      lc.make_or_get_factor(fisher_factors.NaiveFullFactor, ((tf.constant(2),), 16))
 
       self.assertEqual(2, len(lc.get_factors()))
       variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
@@ -543,7 +546,7 @@ class LayerCollectionTest(tf.test.TestCase):
     lc.register_generic(b_0, batch_size=1)
     lc.register_generic(
         b_1, batch_size=1, approx=layer_collection.APPROX_DIAGONAL_NAME)
-    self.assertIsInstance(lc.fisher_blocks[b_0], fisher_blocks.FullFB)
+    self.assertIsInstance(lc.fisher_blocks[b_0], fisher_blocks.NaiveFullFB)
     self.assertIsInstance(lc.fisher_blocks[b_1], fisher_blocks.NaiveDiagonalFB)
 
   def testDefaultLayerCollection(self):

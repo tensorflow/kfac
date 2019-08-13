@@ -1,4 +1,4 @@
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ from __future__ import print_function
 # Dependency imports
 import tensorflow as tf
 
-from tensorflow.python.ops.linalg import linear_operator_util as lou
 from kfac.python.ops import utils
 
 linalg = tf.linalg
@@ -31,7 +30,7 @@ class LinearOperatorExtras(object):  # pylint: disable=missing-docstring
 
   def matmul(self, x, adjoint=False, adjoint_arg=False, name="matmul"):  # pylint: disable=missing-docstring
 
-    with self._name_scope(name, values=[x]):
+    with self._name_scope(name):
       if isinstance(x, tf.IndexedSlices):
         return self._matmul_sparse(x, adjoint=adjoint, adjoint_arg=adjoint_arg)
 
@@ -46,7 +45,7 @@ class LinearOperatorExtras(object):  # pylint: disable=missing-docstring
 
   def matmul_right(self, x, adjoint=False, adjoint_arg=False, name="matmul"):  # pylint: disable=missing-docstring
 
-    with self._name_scope(name, values=[x]):
+    with self._name_scope(name):
 
       if isinstance(x, tf.IndexedSlices):
         return self._matmul_right_sparse(
@@ -66,7 +65,7 @@ class LinearOperatorFullMatrix(LinearOperatorExtras,  # pylint: disable=missing-
                                linalg.LinearOperatorFullMatrix):
 
   def _matmul_right(self, x, adjoint=False, adjoint_arg=False):
-    return lou.matmul_with_broadcast(
+    return linalg.matmul(
         x, self._matrix, adjoint_a=adjoint_arg, adjoint_b=adjoint)
 
   def _matmul_sparse(self, x, adjoint=False, adjoint_arg=False):

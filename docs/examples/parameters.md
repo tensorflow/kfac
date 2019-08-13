@@ -1,6 +1,14 @@
 # K-FAC Parameters.
 
-[TOC]
+## Table of Contents
+
+*   [Damping](#damping)
+*   [Learning Rate](#learning-rate)
+*   [Subsample covariance computation](#subsample-covariance-computation)
+*   [KFAC norm constraint](#kfac-norm-constraint)
+*   [Covariance decay](#covariance-decay)
+*   [Train batch size](#train-batch-size)
+    <br>
 
 We list below various parameters which can be tuned to improve training and run
 time performance of K-FAC.
@@ -63,8 +71,8 @@ from the learning rate used for SGD/RMSProp/Adam optimizer.
 If you are using Conv layers and observe that the KFAC iterations is
 significantly slower than Adam or if you run out of memory then a possible
 remedy is to use subsampling in the covariance computation. To turn on
-subsampling set `kfac_ff.subsample_inputs` to `True` and
-`kfac_ff.subsample_outer_products` to `True`. The former flag subsamples the
+subsampling set `kfac_ff.sub_sample_inputs` to `True` and
+`kfac_ff.sub_sample_outer_products` to `True`. The former flag subsamples the
 batch of inputs used for covariance computation and the later flag subsamples
 extracted patches based on the size of the covariance matrix. Check the
 documentation of `tensorflow_kfac.fisher_factors` for detailed explanation of

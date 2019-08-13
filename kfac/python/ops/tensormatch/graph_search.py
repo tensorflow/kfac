@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ import warnings
 import enum
 import tensorflow as tf
 
+from tensorflow.python.framework import ops as tf_ops
 from tensorflow.python.ops import resource_variable_ops
 from kfac.python.ops import utils
 from kfac.python.ops.tensormatch import graph_matcher as gm
@@ -109,11 +110,15 @@ def record_affine_from_bindings(bindings, consumed_tensors,
       record_type = RecordType.conv2d
       strides = tuple(map(int, linear_op.get_attr('strides')))
       padding = linear_op.get_attr('padding')
+      data_format = linear_op.get_attr('data_format')
       # In Python 3 this might be class "bytes" so we convert to string.
       if not isinstance(padding, str):
         padding = padding.decode()
+      if not isinstance(data_format, str):
+        data_format = data_format.decode()
       record_data['strides'] = strides
       record_data['padding'] = padding
+      record_data['data_format'] = data_format
 
     else:
       raise ValueError("Can't register operation: {}".format(linear_op))
@@ -248,10 +253,10 @@ def register_subgraph_layers(layer_collection,
   # Patterns return bindings to raw tensors, so we need to be able to map back
   # to variables from the tensors those variables reference.
   def var_to_tensor(var):
-    if isinstance(var, resource_variable_ops.ResourceVariable):
+    if resource_variable_ops.is_resource_variable(var):
       return var.handle
-    if isinstance(var, tf.Variable):
-      return var._ref()  # pylint: disable=protected-access
+    if utils.is_reference_variable(var):
+      return tf_ops.internal_convert_to_tensor(var, as_ref=True)
     raise ValueError('%s is not a recognized variable type.' % str(var))
 
   tensors_to_variables = {var_to_tensor(var): var for var in varlist}
@@ -311,16 +316,25 @@ def register_subgraph_layers(layer_collection,
           raise ValueError(
               'Variable {} in linked group {} was not matched.'.format(
                   variable, specified_grouping))
+
+      generic_bad_string = ('generic registrations may be a symptom that the '
+                            'scanner is failing to auto-detect your model. '
+                            'Generic uses a last-resort approximation, and '
+                            'should never be used for common layer types that '
+                            'K-FAC properly supports, such as convs or '
+                            'fully-connected layers.')
       if batch_size is None:
         raise AmbiguousRegistrationError(
-            'Need to register {} as generic, batch size must be specified.'.
-            format(variable))
-      warnings.warn('Registering {} as generic because graph scanner '
-                    'couldn''t match a pattern for it. This can sometimes '
-                    'be caused by the variable not being present in the graph '
-                    'terminating at the registered losses. In such a case you '
-                    'should specify the list of variables '
-                    'explicitly.'.format(variable))
+            ('Tried to register {} as generic without knowledge of batch_size. '
+             'You can pass batch_size in to fix this error. But please note, '
+             + generic_bad_string).format(variable))
+      warnings.warn(('Registering {} as generic because graph scanner '
+                     'couldn\'t match a pattern for it. This can sometimes '
+                     'be caused by the variable not being present in the graph '
+                     'terminating at the registered losses. You might need to '
+                     'pass an explicit list of parameters to tell the system '
+                     'what parameters are actually in your model. Note that '
+                     + generic_bad_string).format(variable))
       layer_collection.register_generic(variable, batch_size, reuse=reuse)
 
 
@@ -507,12 +521,14 @@ def register_records(layer_collection,
         outputs = tuple(record.data['outputs'] for record in record_list)
         strides = record_list[0].data['strides']
         padding = record_list[0].data['padding']
+        data_format = record_list[0].data['data_format']
         layer_collection.register_conv2d_multi(
             params,
             strides,
             padding,
             inputs,
             outputs,
+            data_format=data_format,
             reuse=reuse)
       else:
         record = record_list[0]
@@ -520,6 +536,7 @@ def register_records(layer_collection,
         outputs = record.data['outputs']
         strides = record.data['strides']
         padding = record.data['padding']
+        data_format = record.data['data_format']
         if batch_size and is_batch_time_folded:
           layer_collection.register_conv2d_multi(
               params,
@@ -527,11 +544,13 @@ def register_records(layer_collection,
               padding,
               inputs,
               outputs,
+              data_format=data_format,
               num_uses=num_uses,
               reuse=reuse)
         else:
           layer_collection.register_conv2d(params, strides, padding, inputs,
-                                           outputs, reuse=reuse)
+                                           outputs, data_format=data_format,
+                                           reuse=reuse)
     else:
       assert False, 'Invalid record type {}'.format(record_type)
 

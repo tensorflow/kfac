@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ flags.DEFINE_string('kfac_approx', 'kron_indep',
                     'independence across time, "kron_series_1" is "Option 1" '
                     'from the paper, and "kron_series_2" is "Option 2".')
 
-flags.DEFINE_integer('inverse_update_period', 10,
+flags.DEFINE_integer('inverse_update_period', 5,
                      '# of steps between computing inverse of Fisher factor '
                      'matrices.')
 flags.DEFINE_integer('cov_update_period', 1,
@@ -123,18 +123,18 @@ def make_train_op(batch_size,
     raise ValueError('layer_collection must be defined to use K-FAC.')
 
   if FLAGS.lrmu_adaptation == 'on':
-    learning_rate = 1.0
+    learning_rate = None
     momentum = None
     momentum_type = 'qmodel'
   elif FLAGS.lrmu_adaptation == 'only_lr':
-    learning_rate = 1.0
+    learning_rate = None
     momentum = FLAGS.momentum
     momentum_type = 'qmodel_fixedmu'
   elif FLAGS.lrmu_adaptation == 'off':
     learning_rate = FLAGS.learning_rate
     momentum = FLAGS.momentum
-    momentum_type = 'regular'
-    # momentum_type = 'adam'
+    # momentum_type = 'regular'
+    momentum_type = 'adam'
 
   optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
       invert_every=FLAGS.inverse_update_period,
@@ -154,6 +154,7 @@ def make_train_op(batch_size,
       adapt_damping=True,
       is_chief=True,
       prev_train_batch=cached_reader.cached_batch,
+      loss=batch_loss,
       loss_fn=loss_fn,
       damping_adaptation_decay=0.95,
       damping_adaptation_interval=FLAGS.damping_adaptation_interval,

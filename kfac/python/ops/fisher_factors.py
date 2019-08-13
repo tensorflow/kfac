@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,8 +26,11 @@ import numpy as np
 import six
 import tensorflow as tf
 
+from collections import OrderedDict
+
 from tensorflow.python.util import nest
 from kfac.python.ops import linear_operator as lo
+from tensorflow.python.training import moving_averages
 from kfac.python.ops import utils
 
 
@@ -39,7 +42,9 @@ INIT_COVARIANCES_AT_ZERO = True
 ZERO_DEBIAS = True
 
 # Whether to initialize inverse (and other such matrices computed from the cov
-# matrices) to the zero matrix (or the identity matrix).
+# matrices) to the zero matrix (or the identity matrix). Initializing to
+# zero is a safeguard against anything using the inverse before their first
+# proper update, and so is preferred.
 INIT_INVERSES_AT_ZERO = True
 
 # When the number of inverses requested from a FisherFactor exceeds this value,
@@ -104,7 +109,8 @@ _MAX_NUM_PATCHES_PER_DIMENSION = 3.0
 # (lazily via PartitionedTensor objects).  Otherwise a tuple of tensors over
 # towers will be passed in, and the factors will iterate over this and do the
 # cov computations separately for each one, averaging the results together.
-TOWER_STRATEGY = "concat"
+TOWER_STRATEGY = "separate"
+#TOWER_STRATEGY = "concat"
 
 
 # The variable scope names can be edited by passing a custom sanitizer function.
@@ -217,7 +223,7 @@ def compute_cov(tensor, tensor_right=None, normalizer=None):
     A square 2D Tensor with as many rows/cols as the number of input columns.
   """
   if normalizer is None:
-    normalizer = tf.shape(tensor)[0]
+    normalizer = utils.get_shape(tensor)[0]
   if tensor_right is None:
     cov = (
         tf.matmul(tensor, tensor, transpose_a=True) / tf.cast(
@@ -228,22 +234,52 @@ def compute_cov(tensor, tensor_right=None, normalizer=None):
             tf.cast(normalizer, tensor.dtype))
 
 
-def append_homog(tensor, homog_value=1.):
+def append_homog(tensor, homog_value=None):
   """Appends a homogeneous coordinate to the last dimension of a Tensor.
 
   Args:
     tensor: A Tensor.
     homog_value: Value to append as homogeneous coordinate to the last dimension
-      of `tensor`. (Default: 1.)
+      of `tensor`.  If None 1.0 is used. (Default: None)
 
   Returns:
     A Tensor identical to the input but one larger in the last dimension.  The
     new entries are filled with ones.
   """
-  rank = len(tensor.shape.as_list())
-  shape = tf.concat([tf.shape(tensor)[:-1], [1]], axis=0)
-  ones = homog_value * tf.ones(shape, dtype=tensor.dtype)
-  return tf.concat([tensor, ones], axis=rank - 1)
+  shape = tensor.shape.as_list()
+  rank = len(shape)
+  if any(elt is None for elt in shape):
+    shape = tf.concat([tf.shape(tensor)[:-1], [1]], axis=0)
+  else:
+    shape[-1] = 1
+  if homog_value is not None:
+    appendage = homog_value * tf.ones(shape, dtype=tensor.dtype)
+  else:
+    appendage = tf.ones(shape, dtype=tensor.dtype)
+  return tf.concat([tensor, appendage], axis=-1)
+
+
+def accumulate_and_maybe_write(acc_var,
+                               var,
+                               tensor,
+                               ema_decay,
+                               weight,
+                               should_write):
+
+  def write():
+    return tf.group(
+        var.add_to_average(acc_var.read_value_and_reset(),
+                           decay=ema_decay,
+                           weight=weight))
+
+  with tf.control_dependencies([acc_var.accumulate(tensor)]):
+    if isinstance(should_write, bool):
+      if should_write:
+        return write()
+      else:
+        return tf.no_op()
+    else:
+      return tf.cond(should_write, write, tf.no_op)
 
 
 def scope_string_from_params(params):
@@ -278,7 +314,7 @@ def scope_string_from_params(params):
         name_parts.append("-".join([str(p) for p in param]))
       else:
         name_parts.append(scope_string_from_name(param))
-    elif isinstance(param, (str, int, bool)):
+    elif isinstance(param, (six.string_types, int, bool)):
       name_parts.append(str(param))
     elif isinstance(param, (tf.Tensor, tf.Variable)):
       name_parts.append(scope_string_from_name(param))
@@ -351,7 +387,7 @@ def _subsample_patches(patches, name=None):
                       int(math.ceil(_MAX_NUM_PATCHES_PER_DIMENSION*dimension)))
 
     if total_patches is None:
-      total_patches = tf.shape(patches)[0]
+      total_patches = utils.get_shape(patches)[0]
 
       should_subsample = tf.less(num_patches, total_patches)
       return tf.cond(should_subsample,
@@ -379,7 +415,7 @@ def _random_tensor_gather(array, num_ind, name=None):
     array = tf.convert_to_tensor(array)
     total_size = array.shape.as_list()[0]
     if total_size is None:
-      total_size = tf.shape(array)[0]
+      total_size = utils.get_shape(array)[0]
     indices = tf.random_shuffle(tf.range(0, total_size))[:num_ind]
     return tf.gather(array, indices, axis=0)
 
@@ -446,6 +482,61 @@ class FisherFactor(object):
     """dtype for variable backing this factor."""
     pass
 
+  @abc.abstractmethod
+  def _partial_batch_size(self, source=0, tower=0):
+    """Returns (partial) batch size associated with given source and tower."""
+    pass
+
+  def batch_size(self, source=0):
+    """Returns (total) batch size associated with given source."""
+    return sum(self._partial_batch_size(source=source, tower=tower)
+               for tower in range(self._num_towers))
+
+  def check_partial_batch_sizes(self):
+    """Ensures partial batch sizes are equal across towers and source."""
+
+    # While it could be okay in principle for the different batch sizes for
+    # different towers, the way the code has been written isn't compatible with
+    # this. Basically, the normalizations occur for each tower and then the
+    # results are summed across towers and divided by the number of towers.
+    # The only way this is correct is if the towers all have the same batch
+    # size.
+
+    # Should make these messages use quote characters instead of parentheses
+    # when the bug with quote character rendering in assertion messages is
+    # fixed. See b/129476712
+    msg = ("Inconsistent (partial) batch sizes detected for factor ({}) of type"
+           " {}. This can be caused by passing Tensors with the wrong sizes to "
+           "the registration functions, or misspecification of arguments like "
+           "batch_size, num_uses, or num_timesteps.".format(
+               self.name, utils.cls_name(self)))
+
+    partial_batch_size = self._partial_batch_size()
+
+    if self._num_sources > 1 or self._num_towers > 1:
+      if isinstance(partial_batch_size, int):
+        checks = tuple(
+            partial_batch_size == self._partial_batch_size(source=source,
+                                                           tower=tower)
+            for source, tower in zip(range(self._num_sources),
+                                     range(self._num_towers)))
+        if not all(checks):
+          raise ValueError(msg)
+
+        return tf.no_op()
+
+      else:
+        asserts = tuple(
+            tf.assert_equal(partial_batch_size,
+                            self._partial_batch_size(source=source,
+                                                     tower=tower),
+                            message=msg)
+            for source, tower in zip(range(self._num_sources),
+                                     range(self._num_towers)))
+        return tf.group(asserts)
+
+    return tf.no_op()
+
   @property
   def _cov_initializer(self):
     """Function for initializing covariance variable."""
@@ -455,16 +546,17 @@ class FisherFactor(object):
     """Makes the internal cov variable(s)."""
     assert self._cov is None
     with tf.variable_scope(self._var_scope):
-      self._cov = tf.get_variable(
-          "cov",
-          initializer=self._cov_initializer,
+      self._cov = utils.MovingAverageVariable(
+          name="cov",
           shape=self._cov_shape,
-          trainable=False,
           dtype=self._dtype,
-          use_resource=True)
+          initializer=self._cov_initializer,
+          normalize_value=ZERO_DEBIAS)
+
       self._acc_cov = utils.AccumulatorVariable(
           name="acc_cov",
-          var=self._cov)
+          shape=self._cov_shape,
+          dtype=self._dtype)
 
   @abc.abstractmethod
   def _compute_new_cov(self, source, tower):
@@ -491,9 +583,9 @@ class FisherFactor(object):
 
     new_cov = tf.add_n(new_cov_contribs) / float(self._num_towers)
 
-    # Compute average of 'new_cov' across all TPU cores. On a TPU, each
+    # Compute average of 'new_cov' across all replicas. On a replica, each
     # instance of 'new_cov' will be based on a different minibatch. This ensures
-    # that by the end of assign_moving_average(), all TPU cores see the same
+    # that by the end of assign_moving_average(), all replicas see the same
     # value for self._cov.
     #
     # Other implementations of make_covariance_update_op() that accumulate
@@ -502,28 +594,35 @@ class FisherFactor(object):
     # NOTE: communicating this matrix at every iteration is wasteful in the
     # sense that we might only need fresh copies when we do the inversions.
     # (Although be careful about factors [e.g. diagonal] or ops
-    # [[e.g. multiply()] that directly use the cov vars instead of the inv vars)
-    new_cov = utils.cross_replica_mean(new_cov)
+    # [e.g. multiply()] that directly use the cov vars instead of the inv vars!)
+    new_cov = utils.all_average(new_cov)
 
     return new_cov
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
     """Constructs and returns the covariance update Op.
 
     Args:
-      ema_decay: The exponential moving average decay (float or Tensor).
-      num_steps_per_cov_update: int, Number of steps to accumulate the cov
-        estimates. Optional (Default: 1)
+      ema_decay: float or Tensor. The exponential moving average decay.
+      ema_weight: float or Tensor. The weight to put on the newly computed values.
+        This is typically 1.0 - ema_decay.
+      should_write: Python or TF bool.  If True, we write the covariance to
+        the variable and reset the accumulator instead of just accumulating.
+        (Default: True)
 
     Returns:
       The op which updates the cov variable (via acc_cov).
     """
-    self._cov_tensor = self._compute_total_new_cov()
-    return self._acc_cov.accumulate(
-        self._cov_tensor,
-        ema_decay=ema_decay,
-        num_steps_for_update=num_steps_per_cov_update,
-        zero_debias=ZERO_DEBIAS)
+    cov_tensor = self._compute_total_new_cov()
+    self._cov_tensor = cov_tensor  # This is used for non-standard applications
+                                   # and debugging I think.
+
+    return accumulate_and_maybe_write(self._acc_cov,
+                                      self._cov,
+                                      cov_tensor,
+                                      ema_decay,
+                                      ema_weight,
+                                      should_write)
 
   @abc.abstractmethod
   def _get_data_device(self, tower):
@@ -541,7 +640,7 @@ class FisherFactor(object):
 
   @property
   def cov(self):
-    return self._cov
+    return self._cov.value
 
   def get_cov_vars(self):
     return [self.cov]
@@ -597,16 +696,16 @@ class DenseSquareMatrixFactor(FisherFactor):
   # the latter.
 
   def __init__(self):
-    self._matpower_by_exp_and_damping = {}  # { (float, hashable): variable }
+    self._matpower_by_exp_and_damping = OrderedDict()  # { (float, hashable): variable }
     self._matpower_registrations = set()  # { (float, hashable) }
     self._eigendecomp = None
-    self._damping_funcs_by_id = {}  # {hashable: lambda}
+    self._damping_funcs_by_id = OrderedDict()  # {hashable: lambda}
 
     self._cholesky_registrations = set()  # { hashable }
     self._cholesky_inverse_registrations = set()  # { hashable }
 
-    self._cholesky_by_damping = {}  # { hashable: variable }
-    self._cholesky_inverse_by_damping = {}  # { hashable: variable }
+    self._cholesky_by_damping = OrderedDict()  # { hashable: variable }
+    self._cholesky_inverse_by_damping = OrderedDict()  # { hashable: variable }
 
     super(DenseSquareMatrixFactor, self).__init__()
 
@@ -760,7 +859,8 @@ class DenseSquareMatrixFactor(FisherFactor):
           self._matpower_by_exp_and_damping.items()):
         damping = damping_value_by_id[damping_id]
         ops.append(
-            matpower.assign(
+            utils.smart_assign(
+                matpower,
                 tf.matmul(eigenvectors * (eigenvalues + damping)**exp,
                           tf.transpose(eigenvectors))))
       # These ops share computation and should be run on a single device.
@@ -770,7 +870,8 @@ class DenseSquareMatrixFactor(FisherFactor):
           self._matpower_by_exp_and_damping.items()):
         assert exp == -1
         damping = damping_value_by_id[damping_id]
-        ops.append(matpower.assign(utils.posdef_inv(self.cov, damping)))
+        ops.append(
+            utils.smart_assign(matpower, utils.posdef_inv(self.cov, damping)))
 
     # TODO(b/77902055): If inverses are being computed with Cholesky's
     # we can share the work. Instead this code currently just computes the
@@ -784,12 +885,12 @@ class DenseSquareMatrixFactor(FisherFactor):
 
       if damping_id in self._cholesky_by_damping:
         cholesky = self._cholesky_by_damping[damping_id]
-        cholesky_ops.append(cholesky.assign(cholesky_value))
+        cholesky_ops.append(utils.smart_assign(cholesky, cholesky_value))
 
       identity = tf.eye(
           cholesky_value.shape.as_list()[0], dtype=cholesky_value.dtype)
       cholesky_inv_value = tf.matrix_triangular_solve(cholesky_value, identity)
-      cholesky_ops.append(cholesky_inv.assign(cholesky_inv_value))
+      cholesky_ops.append(utils.smart_assign(cholesky_inv, cholesky_inv_value))
 
       ops.append(tf.group(*cholesky_ops))
 
@@ -797,7 +898,7 @@ class DenseSquareMatrixFactor(FisherFactor):
       if damping_id not in self._cholesky_inverse_by_damping:
         damping = damping_value_by_id[damping_id]
         cholesky_value = utils.cholesky(self.cov, damping)
-        ops.append(cholesky.assign(cholesky_value))
+        ops.append(utils.smart_assign(cholesky, cholesky_value))
 
     self._eigendecomp = False
     return ops
@@ -864,7 +965,7 @@ class DenseSquareMatrixFactor(FisherFactor):
     return self._eigendecomp
 
 
-class FullFactor(DenseSquareMatrixFactor):
+class NaiveFullFactor(DenseSquareMatrixFactor):
   """FisherFactor for a full matrix representation of the Fisher of a parameter.
 
   Note that this uses the naive "square the sum estimator", and so is applicable
@@ -877,11 +978,11 @@ class FullFactor(DenseSquareMatrixFactor):
     self._batch_size = batch_size
     self._params_grads = tuple(utils.ensure_sequence(params_grad)
                                for params_grad in params_grads)
-    super(FullFactor, self).__init__()
+    super(NaiveFullFactor, self).__init__()
 
   @property
   def _var_scope(self):
-    return "ff_full_" + scope_string_from_params(
+    return "ff_naivefull_" + scope_string_from_params(
         [self._params_grads, self._batch_size])
 
   @property
@@ -902,6 +1003,10 @@ class FullFactor(DenseSquareMatrixFactor):
   def _dtype(self):
     return self._params_grads[0][0].dtype
 
+  def _partial_batch_size(self, source=0, tower=0):
+    assert source == 0 and tower == 0
+    return self._batch_size
+
   def _compute_new_cov(self, source, tower):
     assert tower == 0
 
@@ -914,6 +1019,7 @@ class FullFactor(DenseSquareMatrixFactor):
     return None
 
 
+@six.add_metaclass(abc.ABCMeta)
 class DiagonalFactor(FisherFactor):
   """A base class for FisherFactors that use diagonal approximations.
 
@@ -1012,6 +1118,10 @@ class NaiveDiagonalFactor(DiagonalFactor):
   def _dtype(self):
     return self._params_grads[0][0].dtype
 
+  def _partial_batch_size(self, source=0, tower=0):
+    assert source == 0 and tower == 0
+    return self._batch_size
+
   def _compute_new_cov(self, source, tower):
     assert tower == 0
 
@@ -1044,7 +1154,7 @@ class DiagonalKroneckerFactor(DiagonalFactor):
   [vocab_size, vocab_size].
   """
 
-  def __init__(self, tensors, vocab_size=None, dtype=None):
+  def __init__(self, tensors, has_bias=False, dtype=None):
     """Instantiate DiagonalKroneckerFactor.
 
     Args:
@@ -1052,18 +1162,23 @@ class DiagonalKroneckerFactor(DiagonalFactor):
         index is source, second index is tower. Two types of tensors are
         supported. Dense tensors are typically either a layer's inputs or its
         output's gradients. Sparse tensors are typically indices into an
-        [vocab_size, embedding_dim] embedding matrix. If sparse tensors are
-        passed in, vocab_size has to be set as well.
-      vocab_size: int or 0-D Tensor. Should be set only for sparse inputs.
-        Maximum value for entries in tensors.
+        [vocab_size, embedding_dim] embedding matrix. Sparse tensors must have
+        a property named "one_hot_depth" indicating the depth of one-hot tensors
+        they should be converted to.
       dtype: dtype for covariance statistics. Only used for sparse inputs. Must
         be a floating point type. Defaults to float32.
+      has_bias: bool. If True, append '1' to each input.
     """
-    self._dense_input = (vocab_size is None)
     self._tensors = tensors
-    self._vocab_size = vocab_size
     dtype = dtype or tf.float32
-    self._cov_dtype = self._tensors[0][0].dtype if self._dense_input else dtype
+    self._has_bias = has_bias
+    self._one_hot_depth = getattr(self._tensors[0][0], "one_hot_depth", None)
+    if self._one_hot_depth is None:
+      self._dense_input = True
+      self._cov_dtype = self._tensors[0][0].dtype
+    else:
+      self._dense_input = False
+      self._cov_dtype = dtype
 
     super(DiagonalKroneckerFactor, self).__init__()
 
@@ -1075,9 +1190,9 @@ class DiagonalKroneckerFactor(DiagonalFactor):
   @property
   def _cov_shape(self):
     if self._dense_input:
-      size = self._tensors[0][0].shape[1]
+      size = self._tensors[0][0].shape[1] + self._has_bias
     else:
-      size = self._vocab_size
+      size = self._one_hot_depth + self._has_bias
     return [size]
 
   @property
@@ -1092,6 +1207,9 @@ class DiagonalKroneckerFactor(DiagonalFactor):
   def _dtype(self):
     return self._cov_dtype
 
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._tensors[source][tower])[0]
+
   def _compute_new_cov(self, source, tower):
     tensor = self._tensors[source][tower]
 
@@ -1099,7 +1217,7 @@ class DiagonalKroneckerFactor(DiagonalFactor):
       raise ValueError(
           "Input tensors to DiagonalKroneckerFactor must have rank <= 2. "
           "Found tensor with wrong rank: {}".format(tensor))
-    batch_size = tf.shape(tensor)[0]
+    batch_size = utils.get_shape(tensor)[0]
 
     if self._dense_input:
       new_cov = tf.square(tensor)
@@ -1110,7 +1228,8 @@ class DiagonalKroneckerFactor(DiagonalFactor):
       # covariance matrix! This operation is O(batch_size * vocab_size), where
       # it should be O(batch_size * input_size).
       flat_input_ids = tf.reshape(tensor, [-1])
-      new_cov = tf.one_hot(flat_input_ids, self._vocab_size)  # [?, vocab_size]
+      new_cov = tf.one_hot(flat_input_ids,
+                           self._one_hot_depth)  # [?, vocab_size]
 
       # Take average across examples. Note that, because all entries have
       # magnitude zero or one, there's no need to square the entries.
@@ -1123,10 +1242,30 @@ class DiagonalKroneckerFactor(DiagonalFactor):
     new_cov = tf.reduce_sum(new_cov, axis=0)
     new_cov /= tf.cast(batch_size, new_cov.dtype)
 
+    if self._has_bias:
+      new_cov = append_homog(new_cov)
+
     return new_cov
 
   def _get_data_device(self, tower):
     return self._tensors[0][tower].device
+
+
+class DiagonalMultiKF(DiagonalKroneckerFactor):
+
+  def __init__(self, tensors, num_uses, has_bias=False, dtype=None):
+    super(DiagonalMultiKF, self).__init__(
+        tensors, dtype=dtype, has_bias=has_bias)
+    self._num_uses = num_uses
+
+  def _partial_batch_size(self, source=0, tower=0):
+    # Note that some internal comptutations of "batch_size" done in the parent
+    # class won't actually be the proper batch size. Instead, they will be
+    # just "the thing to normalize the statistics by", essentially. This is okay
+    # as we don't mix the two things up.
+    return (super(DiagonalMultiKF, self)._partial_batch_size(source=source,
+                                                             tower=tower)
+            // self._num_uses)
 
 
 class FullyConnectedDiagonalFactor(DiagonalFactor):
@@ -1185,7 +1324,10 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
   def _dtype(self):
     return self._outputs_grads[0][0].dtype
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._outputs_grads[source][tower])[0]
+
+  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
 
     self._squared_inputs = []
     for tower in range(self._num_towers):
@@ -1197,10 +1339,11 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
         self._squared_inputs.append(tf.square(inputs))
 
     return super(FullyConnectedDiagonalFactor, self).make_covariance_update_op(
-        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
+        ema_decay, ema_weight, should_write=should_write)
 
   def _compute_new_cov(self, source, tower):
-    batch_size = tf.shape(self._squared_inputs[tower])[0]
+    batch_size = utils.get_shape(self._squared_inputs[tower])[0]
+
     outputs_grad = self._outputs_grads[source][tower]
 
     # The well-known special formula that uses the fact that the entry-wise
@@ -1214,6 +1357,134 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
 
   def _get_data_device(self, tower):
     return self._inputs[tower].device
+
+
+@six.add_metaclass(abc.ABCMeta)
+class ScaleAndShiftFactor(FisherFactor):
+
+  def __init__(self,
+               inputs,
+               outputs_grads,
+               broadcast_dim,
+               has_shift=True,
+               approx="full"):
+
+    assert approx == "full" or approx == "diagonal"
+
+    self._inputs = inputs
+    self._outputs_grads = outputs_grads
+    self._broadcast_dim = broadcast_dim
+    self._has_shift = has_shift
+    self._approx = approx
+
+    super(ScaleAndShiftFactor, self).__init__()
+
+  @property
+  def _var_scope(self):
+    return "ff_scaleshift_" + scope_string_from_params(
+        [self._inputs, self._outputs_grads, self._broadcast_dim,
+         self._has_shift, self._approx])
+
+  @property
+  def _cov_shape(self):
+    size = np.prod(self._inputs[0].shape[self._broadcast_dim:])
+
+    if self._has_shift:
+      size *= 2
+
+    if self._approx == "full":
+      return (size, size)
+    elif self._approx == "diagonal":
+      return (size,)
+
+  @property
+  def _num_sources(self):
+    return len(self._outputs_grads)
+
+  @property
+  def _num_towers(self):
+    return len(self._inputs)
+
+  @property
+  def _dtype(self):
+    return self._inputs[0].dtype
+
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._outputs_grads[source][tower])[0]
+
+  def _compute_new_cov(self, source, tower):
+    # Here we implement a "sum of squares" estimator that uses the special
+    # structure of the scale & shift operation. In particular, we sum across
+    # all dimensions that broadcast, then square (or take outer-products), and
+    # then average across the mini-batch.
+
+    inputs = self._inputs[tower]
+    outputs_grad = self._outputs_grads[source][tower]
+    batch_size = utils.get_shape(inputs)[0]
+
+    assert len(inputs.shape) == len(outputs_grad.shape)
+    for i in range(1, len(inputs.shape)):
+      assert inputs.shape[i] <= outputs_grad.shape[i]
+
+    # The formula for the gradient of the shift param is just the element-wise
+    # product of the inputs and the output gradients, summed across the
+    # dimensions that get broadcasted.
+    scale_grads = tf.reduce_sum(inputs * outputs_grad,
+                                axis=list(range(1, self._broadcast_dim)))
+    scale_grads_flat = tf.reshape(scale_grads, [batch_size, -1])
+
+    if self._has_shift:
+      # The formula for the gradient of the shift param is just the output
+      # gradients, summed across the dimensions that get broadcasted.
+      shift_grads = tf.reduce_sum(outputs_grad,
+                                  axis=list(range(1, self._broadcast_dim)))
+      shift_grads_flat = tf.reshape(shift_grads, [batch_size, -1])
+
+      params_grads_flat = tf.concat([scale_grads_flat, shift_grads_flat],
+                                    axis=1)
+    else:
+      params_grads_flat = scale_grads_flat
+
+    if self._approx == "full":
+      new_cov = compute_cov(params_grads_flat)
+
+    elif self._approx == "diagonal":
+      new_cov = tf.reduce_mean(tf.square(params_grads_flat), axis=0)
+
+    return new_cov
+
+  def _get_data_device(self, tower):
+    return self._inputs[tower].device
+
+
+class ScaleAndShiftFullFactor(ScaleAndShiftFactor, DenseSquareMatrixFactor):
+
+  def __init__(self,
+               inputs,
+               outputs_grads,
+               broadcast_dim,
+               has_shift=True):
+
+    super(ScaleAndShiftFullFactor, self).__init__(inputs,
+                                                  outputs_grads,
+                                                  broadcast_dim,
+                                                  has_shift=has_shift,
+                                                  approx="full")
+
+
+class ScaleAndShiftDiagonalFactor(ScaleAndShiftFactor, DiagonalFactor):
+
+  def __init__(self,
+               inputs,
+               outputs_grads,
+               broadcast_dim,
+               has_shift=True):
+
+    super(ScaleAndShiftDiagonalFactor, self).__init__(inputs,
+                                                      outputs_grads,
+                                                      broadcast_dim,
+                                                      has_shift=has_shift,
+                                                      approx="diagonal")
 
 
 class ConvDiagonalFactor(DiagonalFactor):
@@ -1314,7 +1585,10 @@ class ConvDiagonalFactor(DiagonalFactor):
   def _dtype(self):
     return self._inputs[0].dtype
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._outputs_grads[source][tower])[0]
+
+  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
     filter_height, filter_width, _, _ = self._filter_shape
 
     # TODO(b/64144716): there is potential here for a big savings in terms
@@ -1345,11 +1619,12 @@ class ConvDiagonalFactor(DiagonalFactor):
         self._patches.append(patches)
 
     return super(ConvDiagonalFactor, self).make_covariance_update_op(
-        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
+        ema_decay, ema_weight, should_write=should_write)
 
   def _compute_new_cov(self, source, tower):
     patches = self._patches[tower]
-    batch_size = tf.shape(patches)[0]
+    batch_size = utils.get_shape(patches)[0]
+
     outputs_grad = self._outputs_grads[source][tower]
 
     new_cov = self._convdiag_sum_of_squares(patches, outputs_grad)
@@ -1410,6 +1685,9 @@ class FullyConnectedKroneckerFactor(DenseSquareMatrixFactor):
   @property
   def _dtype(self):
     return self._tensors[0][0].dtype
+
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._tensors[source][tower])[0]
 
   def _compute_new_cov(self, source, tower):
     tensor = self._tensors[source][tower]
@@ -1520,12 +1798,16 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
   def _dtype(self):
     return self._inputs[0].dtype
 
+  def _partial_batch_size(self, source=0, tower=0):
+    assert source == 0
+    return utils.get_shape(self._inputs[tower])[0]
+
   def _compute_new_cov(self, source, tower):
     assert source == 0
 
     inputs = self._inputs[tower]
     if self._sub_sample_inputs:
-      batch_size = tf.shape(inputs)[0]
+      batch_size = utils.get_shape(inputs)[0]
       # computes: int(math.ceil(batch_size * _INPUTS_TO_EXTRACT_PATCHES_FACTOR))
       new_size = tf.cast(
           tf.ceil(tf.multiply(tf.cast(batch_size, dtype=tf.float32),
@@ -1602,6 +1884,46 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     return self._inputs[tower].device
 
 
+class ConvInputMultiKF(ConvInputKroneckerFactor):
+
+  def __init__(self,
+               inputs,
+               filter_shape,
+               padding,
+               num_uses,
+               strides=None,
+               dilation_rate=None,
+               data_format=None,
+               extract_patches_fn=None,
+               has_bias=False,
+               sub_sample_inputs=None,
+               sub_sample_patches=None,
+               patch_mask=None):
+
+    super(ConvInputMultiKF, self).__init__(self,
+                                           inputs,
+                                           filter_shape,
+                                           padding,
+                                           strides=strides,
+                                           dilation_rate=dilation_rate,
+                                           data_format=data_format,
+                                           extract_patches_fn=extract_patches_fn,
+                                           has_bias=has_bias,
+                                           sub_sample_inputs=sub_sample_inputs,
+                                           sub_sample_patches=sub_sample_patches,
+                                           patch_mask=patch_mask)
+    self._num_uses = num_uses
+
+  def _partial_batch_size(self, source=0, tower=0):
+    # Note that some internal comptutations of "batch_size" done in the parent
+    # class won't actually be the proper batch size. Instead, they will be
+    # just "the thing to normalize the statistics by", essentially. This is okay
+    # as we don't mix the two things up.
+    return (super(ConvInputMultiKF, self)._partial_batch_size(source=source,
+                                                              tower=tower)
+            // self._num_uses)
+
+
 class ConvInputSUAKroneckerFactor(FisherFactor):
   r"""Kronecker factor for the input side of a convolutional layer.
 
@@ -1632,14 +1954,14 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
     self._kw_kh = np.prod(self._filter_shape[0:-2])
     self._in_channels = self._filter_shape[-2]
 
-    self._matpower_by_exp_and_damping = {}  # { (float, hashable): variable }
+    self._matpower_by_exp_and_damping = OrderedDict()  # { (float, hashable): variable }
     self._matpower_registrations = set()  # { (float, hashable) }
-    self._damping_funcs_by_id = {}  # {hashable: lambda}
-    self._damping_var_by_id = {}
+    self._damping_funcs_by_id = OrderedDict()  # {hashable: lambda}
+    self._damping_var_by_id = OrderedDict()
 
     if not ASSUME_ZERO_MEAN_ACTIVATIONS:
-      self._cov_inv_mu_by_damping_id = {}
-      self._rank_one_update_scale_by_damping_id = {}
+      self._cov_inv_mu_by_damping_id = OrderedDict()
+      self._rank_one_update_scale_by_damping_id = OrderedDict()
 
     super(ConvInputSUAKroneckerFactor, self).__init__()
 
@@ -1673,6 +1995,14 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
   def _dtype(self):
     return self._inputs[0].dtype
 
+  @property
+  def mu(self):
+    return self._mu.value
+
+  def _partial_batch_size(self, source=0, tower=0):
+    assert source == 0
+    return utils.get_shape(self._inputs[tower])[0]
+
   def _register_damping(self, damping_func):
     damping_id = graph_func_to_id(damping_func)
     if damping_id not in self._damping_funcs_by_id:
@@ -1686,7 +2016,8 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
 
   def instantiate_cov_variables(self):
     """Makes the internal cov variable(s)."""
-    super(ConvInputSUAKroneckerFactor, self).instantiate_cov_variables()
+    super(ConvInputSUAKroneckerFactor,
+          self).instantiate_cov_variables()
 
     # Create variables for computing the mean activations only if
     # `ASSUME_ZERO_MEAN_ACTIVATIONS` is set to `False`. Otherwise the
@@ -1694,22 +2025,28 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
     # https://arxiv.org/pdf/1602.01407.pdf is ignored.
     if not ASSUME_ZERO_MEAN_ACTIVATIONS:
       with tf.variable_scope(self._var_scope):
-        self._mu = tf.get_variable(
-            "mu",
-            initializer=tf.zeros_initializer,
+        self._mu = utils.MovingAverageVariable(
+            name="mu",
             shape=(self._in_channels, 1),  # number of input channels.
-            trainable=False,
             dtype=self._dtype,
-            use_resource=True)
-        self._acc_mu = utils.AccumulatorVariable(name="acc_mu", var=self._mu)
+            initializer=tf.zeros_initializer(),
+            normalize_value=ZERO_DEBIAS)
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+        self._acc_mu = utils.AccumulatorVariable(
+            name="acc_mu",
+            shape=(self._in_channels, 1),
+            dtype=self._dtype)
+
+  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
     """Constructs and returns the covariance update Op.
 
     Args:
       ema_decay: The exponential moving average decay (float or Tensor).
-      num_steps_per_cov_update: int, Number of steps to accumulate the cov
-        estimates. Optional (Default: 1)
+      ema_weight: float or Tensor. The weight to put on the newly computed
+        values. This is typically 1.0 - ema_decay.
+      should_write: Python or TF bool.  If True, we write the covariance to
+        the variable and reset the accumulator instead of just accumulating.
+        (Default: True)
 
     Returns:
       An Op for updating the covariance Variable referenced by _cov and possibly
@@ -1727,23 +2064,25 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
 
     if not ASSUME_ZERO_MEAN_ACTIVATIONS:
       new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
-      acc_mu_op = self._acc_mu.accumulate(
-          new_mu,
-          ema_decay=ema_decay,
-          num_steps_for_update=num_steps_per_cov_update,
-          zero_debias=ZERO_DEBIAS)
+
+      acc_mu_op = accumulate_and_maybe_write(self._acc_mu,
+                                             self._mu,
+                                             new_mu,
+                                             ema_decay,
+                                             ema_weight,
+                                             should_write)
     else:
+      acc_mu_op = tf.no_op()
+
       if SUBTRACT_MEAN_CONTRIB_FROM_COV:
         new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
 
-      acc_mu_op = tf.no_op()
-
-    acc_cov_op = self._acc_cov.accumulate(
-        new_cov,
-        ema_decay=ema_decay,
-        num_steps_for_update=num_steps_per_cov_update,
-        zero_debias=ZERO_DEBIAS)
-
+    acc_cov_op = accumulate_and_maybe_write(self._acc_cov,
+                                            self._cov,
+                                            new_cov,
+                                            ema_decay,
+                                            ema_weight,
+                                            should_write)
     return tf.group(acc_cov_op, acc_mu_op)
 
   def _compute_new_cov(self, source, tower):
@@ -1785,9 +2124,9 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
     """Returns tensors to compute Fisher inv using Sherman-Morrison formula."""
 
     cov_inv = self._matpower_by_exp_and_damping[(exp, damping_id)]
-    cov_inv_mu = tf.matmul(cov_inv, self._mu)
+    cov_inv_mu = tf.matmul(cov_inv, self.mu)
     hatmu_t_cov_inv_hatmu = self._kw_kh * tf.squeeze(
-        tf.matmul(self._mu, cov_inv_mu, transpose_a=True))
+        tf.matmul(self.mu, cov_inv_mu, transpose_a=True))
 
     if self._has_bias:
       tildemu_t_cov_inv_tildemu = hatmu_t_cov_inv_hatmu + (1. / damping_value)
@@ -1886,8 +2225,10 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
       assert exp == -1
 
       damping = tf.cast(self._damping_funcs_by_id[damping_id](), self._dtype)
-      damping_assign_op = self._damping_var_by_id[damping_id].assign(damping)
-      inverse_op = matpower.assign(utils.posdef_inv(self.cov, damping))
+      damping_assign_op = utils.smart_assign(
+          self._damping_var_by_id[damping_id], damping)
+      inverse_op = utils.smart_assign(matpower,
+                                      utils.posdef_inv(self.cov, damping))
       inverse_ops.append(damping_assign_op)
 
       if not ASSUME_ZERO_MEAN_ACTIVATIONS:
@@ -1897,9 +2238,11 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
                exp, damping_id, damping)
 
           inverse_ops.append(
-              self._cov_inv_mu_by_damping_id[damping_id].assign(cov_inv_mu))
+              utils.smart_assign(self._cov_inv_mu_by_damping_id[damping_id],
+                                 cov_inv_mu))
           inverse_ops.append(
-              self._rank_one_update_scale_by_damping_id[damping_id].assign(
+              utils.smart_assign(
+                  self._rank_one_update_scale_by_damping_id[damping_id],
                   rank_one_update_scale))
       else:
         inverse_ops.append(inverse_op)
@@ -1935,7 +2278,7 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
 
       self._damping_var_by_id[damping_id] = tf.get_variable(
           "damping_var_{}_{}".format(exp_string, damping_string),
-          initializer=tf.zeros_initializer,
+          initializer=tf.zeros_initializer(),
           shape=(),
           trainable=False,
           dtype=self._dtype,
@@ -1944,15 +2287,15 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
       if not ASSUME_ZERO_MEAN_ACTIVATIONS:
         self._cov_inv_mu_by_damping_id[damping_id] = tf.get_variable(
             "cov_inv_mu_{}_{}".format(exp_string, damping_string),
-            initializer=tf.zeros_initializer,
-            shape=self._mu.shape,
+            initializer=tf.zeros_initializer(),
+            shape=(self._in_channels, 1),
             trainable=False,
             dtype=self._dtype,
             use_resource=True)
 
         self._rank_one_update_scale_by_damping_id[damping_id] = tf.get_variable(
             "rank_one_update_scale_{}_{}".format(exp_string, damping_string),
-            initializer=tf.zeros_initializer,
+            initializer=tf.zeros_initializer(),
             shape=(),
             trainable=False,
             dtype=self._dtype,
@@ -1991,8 +2334,8 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
     if ASSUME_ZERO_MEAN_ACTIVATIONS:
       return cov_operator
     else:
-      # self._mu kron 1's vec is computed below by tiling mu.
-      hatmu = tf.tile(self._mu, [1, self._kw_kh])
+      # self.mu kron 1's vec is computed below by tiling mu.
+      hatmu = tf.tile(self.mu, [1, self._kw_kh])
 
       if self._has_bias:
         tildemu = append_homog(tf.reshape(hatmu, (-1,)))
@@ -2077,6 +2420,9 @@ class ConvOutputKroneckerFactor(DenseSquareMatrixFactor):
   def _dtype(self):
     return self._outputs_grads[0][0].dtype
 
+  def _partial_batch_size(self, source=0, tower=0):
+    return utils.get_shape(self._outputs_grads[source][tower])[0]
+
   def _compute_new_cov(self, source, tower):
     outputs_grad = self._outputs_grads[source][tower]
 
@@ -2093,6 +2439,23 @@ class ConvOutputKroneckerFactor(DenseSquareMatrixFactor):
 
   def _get_data_device(self, tower):
     return self._outputs_grads[0][tower].device
+
+
+class ConvOutputMultiKF(ConvOutputKroneckerFactor):
+
+  def __init__(self, outputs_grads, num_uses, data_format=None):
+    super(ConvOutputMultiKF, self).__init__(outputs_grads,
+                                            data_format=data_format)
+    self._num_uses = num_uses
+
+  def _partial_batch_size(self, source=0, tower=0):
+    # Note that some internal comptutations of "batch_size" done in the parent
+    # class won't actually be the proper batch size. Instead, they will be
+    # just "the thing to normalize the statistics by", essentially. This is okay
+    # as we don't mix the two things up.
+    return (super(ConvOutputMultiKF, self)._partial_batch_size(source=source,
+                                                               tower=tower)
+            // self._num_uses)
 
 
 class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
@@ -2119,8 +2482,8 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     self._cov_dt1 = None
     self._acc_cov_dt1 = None
     self._make_cov_dt1 = False
-    self._option1quants_by_damping = {}
-    self._option2quants_by_damping = {}
+    self._option1quants_by_damping = OrderedDict()
+    self._option2quants_by_damping = OrderedDict()
     self._option1quants_registrations = set()
     self._option2quants_registrations = set()
 
@@ -2130,6 +2493,10 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
   @property
   def _num_timesteps(self):
     return self._num_uses
+
+  def _partial_batch_size(self, source=0, tower=0):
+    total_len = utils.get_shape(self._tensors[source][tower])[0]
+    return total_len // self._num_timesteps
 
   @property
   def _var_scope(self):
@@ -2143,9 +2510,10 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     inv_vars.extend(self._option2quants_by_damping.values())
     return inv_vars
 
-  def make_covariance_update_op(self, ema_decay, num_steps_per_cov_update=1):
+  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+
     op = super(FullyConnectedMultiKF, self).make_covariance_update_op(
-        ema_decay, num_steps_per_cov_update=num_steps_per_cov_update)
+        ema_decay, ema_weight, should_write=should_write)
 
     if self._cov_dt1 is not None:
       new_cov_dt1_contribs = []
@@ -2158,14 +2526,14 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       new_cov_dt1 = (tf.add_n(new_cov_dt1_contribs) / float(self._num_towers))
 
       # See comments in FisherFactor.make_covariance_update_op() for details.
-      new_cov_dt1 = utils.cross_replica_mean(new_cov_dt1)
+      new_cov_dt1 = utils.all_average(new_cov_dt1)
 
-      op2 = self._acc_cov_dt1.accumulate(
-          new_cov_dt1,
-          ema_decay=ema_decay,
-          num_steps_for_update=num_steps_per_cov_update,
-          zero_debias=ZERO_DEBIAS)
-
+      op2 = accumulate_and_maybe_write(self._acc_cov_dt1,
+                                       self._cov_dt1,
+                                       new_cov_dt1,
+                                       ema_decay,
+                                       ema_weight,
+                                       should_write)
       # TODO(b/69112164):
       # It's important that _cov and _cov_dt1 remain consistent with each
       # other while the inverse ops are happening. How can we ensure this?
@@ -2182,7 +2550,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       # _compute_new_cov())
       tensor = append_homog(tensor)
 
-    total_len = tf.shape(tensor)[0]
+    total_len = utils.get_shape(tensor)[0]
     batch_size = total_len // self._num_timesteps
 
     tensor_present = tensor[:-batch_size, :]
@@ -2213,7 +2581,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
   @property
   def cov_dt1(self):
     assert self._cov_dt1 is not None
-    return self._cov_dt1
+    return self._cov_dt1.value
 
   def get_cov_vars(self):
     cov_vars = super(FullyConnectedMultiKF, self).get_cov_vars()
@@ -2229,16 +2597,17 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     assert self._cov_dt1 is None
     if self._make_cov_dt1:
       with tf.variable_scope(self._var_scope):
-        self._cov_dt1 = tf.get_variable(
-            "cov_dt1",
-            initializer=tf.zeros_initializer,
+        self._cov_dt1 = utils.MovingAverageVariable(
+            name="cov_dt1",
             shape=self._cov_shape,
-            trainable=False,
             dtype=self._dtype,
-            use_resource=True)
+            initializer=tf.zeros_initializer(),
+            normalize_value=ZERO_DEBIAS)
+
         self._acc_cov_dt1 = utils.AccumulatorVariable(
             name="acc_cov_dt1",
-            var=self._cov_dt1)
+            shape=self._cov_shape,
+            dtype=self._dtype)
 
   def register_option1quants(self, damping_func):
     damping_id = self._register_damping(damping_func)
@@ -2269,7 +2638,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             use_resource=True)
         psi = tf.get_variable(
             "psi_damp{}".format(damping_string),
-            initializer=tf.ones_initializer,
+            initializer=tf.ones_initializer(),
             shape=self._vec_shape,
             trainable=False,
             dtype=self._dtype,
@@ -2301,7 +2670,7 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             use_resource=True)
         mu = tf.get_variable(
             "mu_damp{}".format(damping_string),
-            initializer=tf.ones_initializer,
+            initializer=tf.ones_initializer(),
             shape=self._vec_shape,
             trainable=False,
             dtype=self._dtype,
@@ -2362,8 +2731,8 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
         # L = C0^(-1/2) * U
         Lmat = tf.matmul(invsqrtC0, U)
 
-        ops.append(Lmat_var.assign(Lmat))
-        ops.append(psi_var.assign(psi))
+        ops.append(utils.smart_assign(Lmat_var, Lmat))
+        ops.append(utils.smart_assign(psi_var, psi))
 
       for damping_id, (Pmat_var, Kmat_var,
                        mu_var) in self._option2quants_by_damping.items():
@@ -2406,9 +2775,9 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
         # K = C_0^(-1/2) * E
         Kmat = tf.matmul(invsqrtC0, E)
 
-        ops.append(Pmat_var.assign(Pmat))
-        ops.append(Kmat_var.assign(Kmat))
-        ops.append(mu_var.assign(mu))
+        ops.append(utils.smart_assign(Pmat_var, Pmat))
+        ops.append(utils.smart_assign(Kmat_var, Kmat))
+        ops.append(utils.smart_assign(mu_var, mu))
 
     ops += super(FullyConnectedMultiKF, self).make_inverse_update_ops()
     return [tf.group(*ops)]

@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -82,7 +82,6 @@ class FisherEstimator(object):
                damping,
                layer_collection,
                exps=(-1,),
-               num_steps_per_cov_update=1,
                estimation_mode="gradients",
                colocate_gradients_with_ops=True,
                name="FisherEstimator",
@@ -93,15 +92,14 @@ class FisherEstimator(object):
     """Create a FisherEstimator object.
 
     Args:
-      variables: A `list` of variables or `callable` which returns the variables
-        for which to estimate the Fisher. This must match the variables
-        registered in layer_collection (if it is not None).
+      variables: A `list` of variables for which to estimate the Fisher. This
+        must match the variables registered in layer_collection (if it is not
+        None).
       cov_ema_decay: The decay factor used when calculating the covariance
         estimate moving averages.
       damping: float or 0D Tensor. This quantity times the identity matrix is
         (approximately) added to the matrix being estimated.
-      layer_collection: Either layer collection object or a function which
-        returns an instance to `LayerCollection` object, which holds for the
+      layer_collection: A LayerCollection object which holds for the
         Fisher blocks, Kronecker factors, and losses associated with the
         graph.
       exps: List of floats or ints. These represent the different matrix
@@ -109,11 +107,6 @@ class FisherEstimator(object):
         to multiply vectors by. If the user asks for a matrix power other
         one of these (or 1, which is always supported), there will be a
         failure. (Default: (-1,))
-      num_steps_per_cov_update: int, The updates to the covariance estimates
-        are accumulated for `num_steps_per_cov_update` steps before being
-        applied (using a decayed average). This is useful when accumulating
-        update information across multiple session.run calls.
-        (Default: 1)
       estimation_mode: The type of estimator to use for the Fishers/GGNs. Can be
         'gradients', 'empirical', 'curvature_prop', 'curvature_prop_GGN',
         'exact', or 'exact_GGN'. (Default: 'gradients'). 'gradients' is the
@@ -151,11 +144,11 @@ class FisherEstimator(object):
         this will correspond to the standard parameter gradient on the loss.
         (Default: False)
       batch_size: The size of the mini-batch. Only needed when
-         `compute_params_stats` is True. Note that when using data parallelism
-          where the model graph and optimizer are replicated across multiple
-          devices, this should be the per-replica batch size. An example of
-          this is sharded data on the TPU, where batch_size should be set to
-          the total batch size divided by the number of shards. (Default: None)
+        `compute_params_stats` is True. Note that when using data parallelism
+        where the model graph and optimizer are replicated across multiple
+        devices, this should be the per-replica batch size. An example of
+        this is sharded data on the TPU, where batch_size should be set to
+        the total batch size divided by the number of shards. (Default: None)
 
     Raises:
       ValueError: If no losses have been registered with layer_collection.
@@ -165,7 +158,6 @@ class FisherEstimator(object):
     self._damping = damping
     self._estimation_mode = estimation_mode
     self._layer_collection = layer_collection
-    self._num_steps_per_cov_update = num_steps_per_cov_update
     self._gradient_fns = {
         "gradients": self._get_grads_lists_gradients,
         "empirical": self._get_grads_lists_empirical,
@@ -202,10 +194,7 @@ class FisherEstimator(object):
 
   @property
   def variables(self):
-    if callable(self._variables):
-      return self._variables()
-    else:
-      return self._variables
+    return self._variables
 
   @property
   def damping(self):
@@ -227,10 +216,7 @@ class FisherEstimator(object):
 
   @property
   def layers(self):
-    if callable(self._layer_collection):
-      return self._layer_collection()
-    else:
-      return self._layer_collection
+    return self._layer_collection
 
   @property
   def mat_type(self):
@@ -254,7 +240,7 @@ class FisherEstimator(object):
         correspondence with the `blocks` property.
 
     Returns:
-      A list (in the same order) of the the return results of the thunks,
+      A list (in the same order) of the returned results of the thunks,
       with possible device placement applied.
     """
     pass
@@ -393,8 +379,21 @@ class FisherEstimator(object):
       raise ValueError("Unrecognized value {} for estimation_mode.".format(
           self._estimation_mode))
 
-    if self._compute_params_stats:
+    if any(grad is None for grad in nest.flatten(grads_lists)):
+      tensors_flat = nest.flatten(tensors_to_compute_grads)
+      grads_flat = nest.flatten(grads_lists)
+      bad_tensors = tuple(
+          tensor for tensor, grad in zip(tensors_flat, grads_flat)
+          if grad is None)
+      bad_string = ""
+      for tensor in bad_tensors:
+        bad_string += "\t{}\n".format(tensor)
+      raise ValueError("It looks like you registered one of more tensors that "
+                       "the registered loss/losses don't depend on. (These "
+                       "returned None from tf.gradients.) The tensors were:"
+                       "\n\n" + bad_string)
 
+    if self._compute_params_stats:
       idx = len(blocks)
       params_stats_unnorm = tuple(tf.add_n(grad_list)
                                   for grad_list in grads_lists[idx:])
@@ -405,7 +404,7 @@ class FisherEstimator(object):
 
       # batch_size should be the per-replica batch size and thus we do a
       # cross-replica mean instead of a sum here
-      self._params_stats = tuple(utils.cross_replica_mean(tensor)
+      self._params_stats = tuple(utils.all_average(tensor)
                                  for tensor in params_stats)
 
       grads_lists = grads_lists[:idx]
@@ -424,12 +423,42 @@ class FisherEstimator(object):
 
   def _finalize(self):
     if not self._finalized:
-      self.layers.create_subgraph()
+      self.layers.finalize()
       self.layers.check_registration(self.variables)
       self._instantiate_factors()
       self._register_matrix_functions()
 
     self._finalized = True
+
+  def _check_batch_sizes(self, factor):
+    """Checks that the batch size(s) for a factor matches the reference value."""
+
+    # Should make these messages use quote characters instead of parentheses
+    # when the bug with quote character rendering in assertion messages is
+    # fixed. See b/129476712
+    if self._batch_size is None:
+      batch_size = self.factors[0].batch_size()
+      string = ("Batch size {} for factor (" + factor.name + ") of type "
+                + utils.cls_name(factor) + " did not match value {} used by "
+                "factor (" + self.factors[0].name + ") of type "
+                + utils.cls_name(self.factors[0]) + ".")
+    else:
+      batch_size = self._batch_size
+      string = ("Batch size {} for factor (" + factor.name + ") of type "
+                + utils.cls_name(factor) + " did not match value {} which was "
+                "passed to optimizer/estimator.")
+
+    factor_batch_size = factor.batch_size()
+
+    if isinstance(batch_size, int) and isinstance(factor_batch_size, int):
+      if factor_batch_size != batch_size:
+        raise ValueError(string.format(factor_batch_size, batch_size))
+      return factor.check_partial_batch_sizes()
+
+    else:
+      message = string.format("(x)", "(y)")
+      with tf.control_dependencies([factor.check_partial_batch_sizes()]):
+        return tf.assert_equal(factor_batch_size, batch_size, message=message)
 
   def _create_ops_and_vars_thunks(self, scope=None):
     """Create thunks that make the ops and vars on demand.
@@ -584,11 +613,20 @@ class FisherEstimator(object):
   def _create_cov_update_thunk(self, factor, scope):
     """Constructs a covariance update thunk for a single FisherFactor."""
 
-    def thunk():
+    def thunk(should_write=True,
+              ema_decay=None,
+              ema_weight=None):
+
+      if ema_decay is None:
+        ema_decay = self._cov_ema_decay
+
+      if ema_weight is None:
+        ema_weight = 1.0 - self._cov_ema_decay
+
       with tf.variable_scope(scope):
-        return factor.make_covariance_update_op(
-            self._cov_ema_decay,
-            num_steps_per_cov_update=self._num_steps_per_cov_update)
+        with tf.control_dependencies([self._check_batch_sizes(factor)]):
+          return factor.make_covariance_update_op(
+              ema_decay, ema_weight, should_write=should_write)
 
     return thunk
 
@@ -631,7 +669,6 @@ class FisherEstimator(object):
     return tuple((grad,) for grad in grads_all)
 
   def _get_transformed_random_signs(self):
-    """No docstring required."""
     if self.mat_type == "Fisher":
       mult_func = lambda loss, index: loss.multiply_fisher_factor(index)
       inner_shape_func = lambda loss: loss.fisher_factor_inner_shape
@@ -642,7 +679,8 @@ class FisherEstimator(object):
     transformed_random_signs = []
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
-        value = mult_func(loss, utils.generate_random_signs(inner_shape_func(loss)))
+        value = mult_func(loss,
+                          utils.generate_random_signs(inner_shape_func(loss)))
         coeff = tf.cast(self.layers.loss_coeffs[loss], dtype=value.dtype)
         transformed_random_signs.append(tf.sqrt(coeff) * value)
     return transformed_random_signs
@@ -659,7 +697,6 @@ class FisherEstimator(object):
     return tuple((grad,) for grad in grads_all)
 
   def _get_grads_lists_exact(self, tensors):
-    """No docstring required."""
     if self.mat_type == "Fisher":
       # pylint: disable=g-long-lambda
       mult_func = (lambda loss, index:
@@ -676,15 +713,16 @@ class FisherEstimator(object):
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
         for index in np.ndindex(*inner_shape_func(loss)[1:]):
-          transformed_one_hot = (tf.sqrt(self.layers.loss_coeffs[loss]) *
-                                 mult_func(loss, index))
+          value = mult_func(loss, index)
+          coeff = tf.cast(self.layers.loss_coeffs[loss], dtype=value.dtype)
+          transformed_one_hot = tf.sqrt(coeff) * value
           grads_flat = tf.gradients(
               loss.inputs,
               nest.flatten(tensors),
               grad_ys=transformed_one_hot,
               colocate_gradients_with_ops=self._colocate_gradients_with_ops)
           grads_all.append(nest.pack_sequence_as(tensors, grads_flat))
-    return zip(*grads_all)
+    return tuple(zip(*grads_all))
 
 
 class FisherEstimatorRoundRobin(placement.RoundRobinPlacementMixin,

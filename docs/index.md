@@ -7,7 +7,11 @@ second-order optimization method, in TensorFlow. When applied to feedforward and
 convolutional neural networks, K-FAC can converge much faster (`>3.5x`) and with
 fewer iterations (`>14x`) than SGD with Momentum.
 
-[TOC]
+## Table of Contents
+
+*   [What is K-FAC?](#what-is-k-fac)
+*   [Why should I use K-FAC?](#why-should-i-use-k-fac)
+*   [How do I use K-FAC?](#how-do-i-use-k-fac)
 
 ## What is K-FAC?
 
@@ -46,7 +50,7 @@ Using K-FAC requires three steps,
 1.  Registering layer inputs, weights, and pre-activations with a
     `kfac.LayerCollection`.
 2.  Register loss functions.
-3.  Minimizing the loss with a `PeriodicInvCovUpdateOptimizer`.
+3.  Minimizing the loss with a `kfac.PeriodicInvCovUpdateKfacOpt`.
 
 ```python
 import kfac
@@ -65,7 +69,7 @@ layer_collection.register_softmax_cross_entropy_loss(logits)
 layer_collection.auto_register_layers()
 
 # Construct training ops.
-optimizer = kfac.PeriodicInvCovUpdateOptimizer(..., layer_collection=layer_collection)
+optimizer = kfac.PeriodicInvCovUpdateKfacOpt(..., layer_collection=layer_collection)
 train_op = optimizer.minimize(loss)
 
 # Minimize loss.
@@ -81,3 +85,16 @@ automatically.
 
 [convexamplesec]: https://github.com/tensorflow/kfac/tree/master/docs/examples/convolutional.md
 [periodicincovupdate]: https://github.com/tensorflow/kfac/tree/master/kfac/python/ops/kfac_utils/periodic_inv_cov_update_kfac_opt.py
+
+## Table of contents
+
+*   [Home](https://github.com/tensorflow/kfac/tree/master/docs/index.md)
+*   User Guide
+    *   [Keras](https://github.com/tensorflow/kfac/tree/master/python/keras/README.md)
+    *   [Convolutional](https://github.com/tensorflow/kfac/tree/master/docs/examples/convolutional.md)
+    *   [Auto damping](https://github.com/tensorflow/kfac/tree/master/docs/examples/auto_damp.md)
+    *   [Distributed Training](https://github.com/tensorflow/kfac/tree/master/docs/examples/distributed_training.md)
+    *   [Parameters](https://github.com/tensorflow/kfac/tree/master/docs/examples/parameters.md)
+*   [Applications](https://github.com/tensorflow/kfac/tree/master/docs/applications.md)
+*   [Some KFAC-Papers](https://github.com/tensorflow/kfac/tree/master/docs/papers.md)
+*   [Contact](https://github.com/tensorflow/kfac/tree/master/docs/contact.md)

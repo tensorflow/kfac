@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -73,10 +73,10 @@ def BatchNorm(in_pattern=Tensor('in'),
                            (Tensor, ('In', (Mul, ('In', Tensor,
                                                   Tensor('inv')))))))
   return (Tensor(output_name),
-          ('In', (Add, ('In', (Tensor, ('In', (Mul, ('In', in_pattern,
-                                                     inv_pat)))),
-                        (Tensor, ('In', ('?:choice', with_offset_pat,
-                                         without_offset_pat)))))))
+          ('In', (AddV2, ('In', (Tensor, ('In', (Mul, ('In', in_pattern,
+                                                       inv_pat)))),
+                          (Tensor, ('In', ('?:choice', with_offset_pat,
+                                           without_offset_pat)))))))
 
 
 def FusedBatchNormOutput(in_pattern=Tensor('in'),
@@ -86,10 +86,9 @@ def FusedBatchNormOutput(in_pattern=Tensor('in'),
   """Pattern constructor for matching tf.nn.fused_batch_norm subgraphs."""
   return (Tensor(output_name),
           ('In',
-           (FusedBatchNorm,
-            ('In', in_pattern, Tensor(scale_name), Tensor(offset_name),
-             Tensor, Tensor),
-            ('Out', Tensor(output_name), Tensor, Tensor, Tensor, Tensor))))
+           (('?:choice', FusedBatchNorm, FusedBatchNormV2, FusedBatchNormV3),
+            ('In', in_pattern, Tensor(scale_name), Tensor(offset_name), Tensor,
+             Tensor))))
 
 
 # TODO(mattjj): add more ops to this pattern
@@ -104,9 +103,9 @@ def Affine(in_pattern=Tensor('in'),
   """Pattern constructor for matching affine operation subgraphs."""
   linear_pat = (('?:choice', Conv2D(linear_op_name), MatMul(linear_op_name)),
                 ('In', in_pattern, Variable(weights_name)))
-  affine_pat_r = (('?:choice', Add, BiasAdd),
+  affine_pat_r = (('?:choice', Add, BiasAdd, AddV2),
                   ('In', (Tensor, ('In', linear_pat)), Variable(biases_name)))
-  affine_pat_l = (('?:choice', Add, BiasAdd),
+  affine_pat_l = (('?:choice', Add, BiasAdd, AddV2),
                   ('In', Variable(biases_name), (Tensor, ('In', linear_pat))))
   affine_pat = ('?:choice', affine_pat_r, affine_pat_l)
   return (Tensor(output_name), ('In', ('?:choice', affine_pat, linear_pat)))

@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,20 +25,65 @@ import tensorflow as tf
 from tensorflow.contrib.tpu.python.ops import tpu_ops
 from tensorflow.contrib.tpu.python.tpu import tpu_function
 from tensorflow.python.ops import resource_variable_ops
-from tensorflow.python.training import moving_averages
 from tensorflow.python.util import nest
 
 # Method used for inverting matrices.
 POSDEF_INV_METHOD = "cholesky"
 POSDEF_EIG_METHOD = "self_adjoint"
 
+_TF_REPLICATOR = None
 
-def set_global_constants(posdef_inv_method=None):
+
+def smart_assign(variable, value, assign_fn=tf.assign):
+  """Calls assign_fn on variable and value in a cross-replica context.
+
+  When this function is called in a per-replica context, it will enter a cross-
+  replica context before calling assign_fn(variable, value). During training
+  with a tf.distribute.Strategy, optimizer.minimize is always called in a per-
+  replica context (e.g. via experimental_run for TPUStrategy). Since with this
+  function we assign a synchronized Tensor to a MirroredVariable with assign_fn,
+  we use a merge_call to enter a cross-replica context, then use
+  distribution.extended.update to assign value to variable with assign_fn.
+
+  When this function is called in a cross-replica context or outside of a
+  tf.distribute.Strategy scope, smart_assign will use assign_fn as is.
+  Operations that happen inside of a tf.distribute.Strategy scope
+  are typically in a cross replica context, unless, for example, they happen in
+  an experimental_run call or a call_for_each_replica call.  In a cross-replica
+  context, tf.distribute.get_replica_context() returns None.
+
+  Args:
+    variable: TF Variable. A MirroredVariable when in a distribution strategy.
+    value: TF Tensor. This function will throw an error if value is a PerReplica
+      type, which means it is an unsynchronized Tensor. You must reduce it using
+      all_sum or all_average before using this function.
+    assign_fn: assign_fn(variable, value) -> tf.Operation. The function
+      used to update variable with value, typically tf.assign, tf.assign_add,
+      or tf.assign_sub.
+
+  Returns:
+    tf.Tensor that contains the result of assign_fn(variable, value) called in
+    a cross-replica context.
+  """
+  if not (tf.distribute.has_strategy() and tf.distribute.get_replica_context()):
+    return assign_fn(variable, value)
+
+  def merge_fn(distribution, variable, value):
+    return distribution.extended.update(variable, assign_fn, args=(value,))
+
+  return tf.distribute.get_replica_context().merge_call(
+      merge_fn, args=(variable, value))
+
+
+def set_global_constants(posdef_inv_method=None, tf_replicator=None):
   """Sets various global constants used by the classes in this module."""
   global POSDEF_INV_METHOD
+  global _TF_REPLICATOR
 
   if posdef_inv_method is not None:
     POSDEF_INV_METHOD = posdef_inv_method
+  if tf_replicator is not None:
+    _TF_REPLICATOR = tf_replicator
 
 
 class SequenceDict(object):
@@ -180,8 +225,8 @@ def posdef_inv_matrix_inverse(tensor, identity, damping):
 
 def posdef_inv_cholesky(tensor, identity, damping):
   """Computes inverse(tensor + damping * identity) with Cholesky."""
-  chol = tf.cholesky(tensor + damping * identity)
-  return tf.cholesky_solve(chol, identity)
+  chol = tf.linalg.cholesky(tensor + damping * identity)
+  return tf.linalg.cholesky_solve(chol, identity)
 
 
 def posdef_inv_eig(tensor, identity, damping):
@@ -227,7 +272,7 @@ def cholesky(tensor, damping):
   """Computes the inverse of tensor + damping * identity."""
   identity = tf.eye(tensor.shape.as_list()[0], dtype=tensor.dtype)
   damping = tf.cast(damping, dtype=tensor.dtype)
-  return tf.cholesky(tensor + damping * identity)
+  return tf.linalg.cholesky(tensor + damping * identity)
 
 
 class SubGraph(object):
@@ -285,9 +330,9 @@ class SubGraph(object):
         else:
           consumers_set.add(consumer)
 
-    if isinstance(var, resource_variable_ops.ResourceVariable):
+    if resource_variable_ops.is_resource_variable(var):
       var = var.handle
-    elif isinstance(var, tf.Variable):
+    elif is_reference_variable(var):
       var = var.value()
     else:
       raise ValueError("%s does not appear to be a variable." % str(var))
@@ -339,111 +384,196 @@ def fwd_gradients(ys, xs, grad_xs=None, stop_gradients=None,
   return dysdx
 
 
-def get_num_replicas():
-  # I'm assuming replicas and shards are always equal until someone tells me
-  # different.
-  return tpu_function.get_tpu_context().number_of_shards
+def get_tf_replicator():
+  return _TF_REPLICATOR
+
+
+def is_tpu_replicated():
+  is_tpu_strategy = (tf.distribute.has_strategy() and
+                     tf.distribute.get_replica_context() and
+                     isinstance(tf.distribute.get_strategy(),
+                                tf.distribute.experimental.TPUStrategy))
+  num_shards = tpu_function.get_tpu_context().number_of_shards
+  return is_tpu_strategy or num_shards is not None
 
 
 def is_replicated():
-  return get_num_replicas() is not None
+  """Check if we are operating in a supported replicated context."""
+  if tf.distribute.has_strategy() and tf.distribute.get_replica_context():
+    return tf.distribute.get_strategy().num_replicas_in_sync > 1
+  return get_tf_replicator() is not None or is_tpu_replicated()
 
 
-def cross_replica_mean(structure, name=None):
-  """Averages the contents of a nested structure across all replicas.
+def get_num_replicas():
+  """Returns the number of replicas.
 
-  Args:
-    structure: A nested structure of Tensors.
-    name: None or string. Name of Op.
-
-  Returns:
-    A nested structure with the corresponding Tensors being the cross-replica
-    averaged versions of those in `structure`.
+  If not operating in a supported replicated context this function will return
+  1.
   """
 
-  num_replicas = get_num_replicas()
+  tf_replicator = get_tf_replicator()
 
-  if num_replicas and num_replicas > 1:
-    with tf.name_scope(name, "cross_replica_mean", nest.flatten(structure)):
-      return nest.map_structure(
-          lambda x: tf.contrib.tpu.cross_replica_sum(x / num_replicas),
-          structure)
+  if tf_replicator:
+    return tf_replicator.num_replicas_in_sync
+  elif tf.distribute.has_strategy():
+    return tf.distribute.get_strategy().num_replicas_in_sync
   else:
-    return structure
-
-
-def cross_replica_sum(structure, name=None):
-  """Sums the contents of a nested structure across all replicas.
-
-  Args:
-    structure: A nested structure of Tensors.
-    name: None or string. Name of Op.
-
-  Returns:
-    A nested structure with the corresponding Tensors being the cross-replica
-    summed versions of those in `structure`.
-  """
-  num_replicas = get_num_replicas()
-
-  if num_replicas and num_replicas > 1:
-    with tf.name_scope(name, "cross_replica_sum", nest.flatten(structure)):
-      return nest.map_structure(tf.contrib.tpu.cross_replica_sum, structure)
-  else:
-    return structure
-
-
-def cross_replica_partial_sum(thunk, include_me, name=None):
-  """Return sum of (conditionally executed) thunks across replicas.
-
-  Args:
-    thunk: A thunk returning a nested structure of Tensors. These should all
-      have statically known shapes.
-    include_me: 0D Tensor of type tf.bool. If this is true, this replica is
-      included in the sum. Otherwise it is ignored and the output of thunk
-      will not be included as a dependency in the graph.
-    name: None or string. Name of Op.
-
-  Returns:
-    A nested structure with the corresponding Tensors being the cross-replica
-    summed versions of those in `structure`.
-  """
-  fail = tf.Assert(tf.constant(False),
-                   ["It appears that TF wasn't able to statically determine "
-                    "the shape of the tensors returned by thunk."])
-  # This control dependency checks that we don't execute any of the ops
-  # returned by that call to the thunk.  These shouldn't be executed because
-  # that part of the graph is supposed to only be used to get the shape
-  # and type information needed by zeros_like().
-  with tf.control_dependencies([fail]):
-    example_structure = thunk()
-
-  def compute_zeros():
-    # TensorFlow's optimization should eliminate the actual computations
-    # done to compute example_structure, using only the (static) shape
-    # information.
-    return nest.map_structure(tf.zeros_like, example_structure)
-
-  # This trick of using cross_replica_sum with tensors of zeros is
-  # obviously wasteful in terms of commmunication. A better solution would
-  # involve only communicating the tensors from replicas where `include_me`
-  # was True.
-  return cross_replica_sum(
-      tf.cond(include_me, thunk, compute_zeros, strict=True), name=name)
+    # I'm assuming replicas and shards are always equal until someone tells me
+    # different.
+    num_replicas = tpu_function.get_tpu_context().number_of_shards
+    if num_replicas:
+      return num_replicas
+    else:
+      return 1
 
 
 def get_replica_id():
-  """Returns an id number for the current replica, counting from 0."""
-  # This code is based on TensorTracer._add_replica_id_to_graph().
+  """Returns an id number for the current replica, counting from 0.
 
+  If not operating in a supported replicated context this function will return
+  0.
+  """
+
+  tf_replicator = get_tf_replicator()
+
+  if tf_replicator:
+    return tf_replicator.current_replica_id
+  elif tf.distribute.has_strategy() and tf.distribute.get_replica_context():
+    return tf.distribute.get_replica_context().replica_id_in_sync_group
+
+  # This code below this point is based on
+  # TensorTracer._add_replica_id_to_graph().
   num_replicas = get_num_replicas()
 
-  if not num_replicas:
-    return None
+  if num_replicas <= 1:
+    return 0
 
   with tf.control_dependencies(None):
     # Uses None as dependency to run outside of TPU graph rewrites.
     return tpu_ops.tpu_replicated_input(list(range(num_replicas)),
                                         name="replica_id")
+
+
+def all_sum(structure, name=None):
+  """Sums the contents of a nested structure across all replicas.
+
+  If not operating in a supported replicated context this function acts like
+  the identity.
+
+  Args:
+    structure: A nested structure of Tensors.
+    name: None or string. Optional name of Op. (Default: None)
+
+  Returns:
+    A nested structure with the corresponding Tensors being the cross-replica
+    summed versions of those in `structure`.
+  """
+  num_replicas = get_num_replicas()
+
+  if num_replicas <= 1:
+    return structure
+
+  tf_replicator = get_tf_replicator()
+  if tf_replicator:
+    return tf_replicator.all_sum(structure)
+
+  elif tf.distribute.has_strategy() and tf.distribute.get_replica_context():
+    return tf.distribute.get_replica_context().all_reduce(
+        tf.distribute.ReduceOp.SUM, structure)
+
+  elif is_tpu_replicated():
+    def tpu_all_sum(tensor):
+      return tf.contrib.tpu.cross_replica_sum(tensor, name=name)
+
+    return nest.map_structure(tpu_all_sum, structure)
+
+  return structure
+
+
+def all_average(structure, name=None):
+  """Averages the contents of a nested structure across all replicas.
+
+  If not operating in a supported replicated context this function acts like
+  the identity.
+
+  Args:
+    structure: A nested structure of Tensors.
+    name: None or string. Optional name of Op. (Default: None)
+
+  Returns:
+    A nested structure with the corresponding Tensors being the cross-replica
+    averaged versions of those in `structure`.
+  """
+  num_replicas = get_num_replicas()
+
+  if num_replicas <= 1:
+    return structure
+
+  if tf.distribute.has_strategy() and tf.distribute.get_replica_context():
+    return tf.distribute.get_replica_context().all_reduce(
+        tf.distribute.ReduceOp.MEAN, structure)
+
+  return nest.map_structure(lambda x: x / num_replicas, all_sum(structure,
+                                                                name=name))
+
+
+def map_gather(thunks, name=None):
+  """Distributes the execution of thunks over replicas, then gathers results.
+
+    This method can be used to distribute several expensive computations across
+    the replicas, rather than duplicating the computation in all of them.
+
+  Args:
+    thunks: A list of thunks that each returns a nested structure of Tensors.
+      These should all have statically known shapes.
+    name: None or string. Optional name of Op. (Default: None)
+
+  Returns:
+    A list of nested structures of Tensors representing the return values of
+    the list of thunks.
+  """
+
+  num_replicas = get_num_replicas()
+
+  if num_replicas <= 1:
+    return tuple(thunk() for thunk in thunks)
+
+  tf_replicator = get_tf_replicator()
+
+  if tf_replicator:
+    return tf_replicator.map_gather(thunks, lambda thunk: thunk())
+
+  elif is_tpu_replicated():
+    replica_id = get_replica_id()
+
+    def zeros_like(tensor):
+      return tf.zeros(dtype=tensor.dtype, shape=tensor.shape)
+
+    results = []
+    for idx, thunk in enumerate(thunks):
+      # TensorFlow's optimization should eliminate the actual computations
+      # done to compute example_structure, using only the (static) shape
+      # information.
+      def make_zeros_thunk(example_structure):
+        def zeros_thunk():
+          return nest.map_structure(zeros_like, example_structure)
+        return zeros_thunk
+
+      # This trick of using cross_replica_sum with tensors of zeros is
+      # obviously wasteful in terms of commmunication. A better solution would
+      # involve only communicating the tensors from replicas where `include_me`
+      # was True.
+      include_me = tf.equal(replica_id, idx % num_replicas)
+      results.append(
+          all_sum(tf.cond(include_me,
+                          thunk,
+                          make_zeros_thunk(thunk()),
+                          strict=True),
+                  name=name))
+
+    return results
+
+  return tuple(thunk() for thunk in thunks)
 
 
 def ensure_sequence(obj):
@@ -569,13 +699,16 @@ def extract_convolution_patches(inputs,
 
     # Map each input feature to a location in the output.
     out_channels = np.prod(spatial_filter_shape) * in_channels
-    filters = tf.eye(out_channels)
+    filters = tf.eye(out_channels, dtype=inputs.dtype)
     filters = tf.reshape(
         filters,
         list(spatial_filter_shape) + [in_channels, out_channels])
 
     if strides is not None and len(strides) == len(inputs.shape):
       strides = strides[1:-1]  # remove batch and channel dimension
+
+    if dilation_rate is not None and len(dilation_rate) == len(inputs.shape):
+      dilation_rate = dilation_rate[1:-1]  # remove batch and channel dimension
 
     result = tf.nn.convolution(
         inputs,
@@ -702,149 +835,69 @@ def matmul_diag_sparse(A_diag, B, name=None):  # pylint: disable=invalid-name
 
 
 class AccumulatorVariable(object):
-  """Accumulates values over multiple sess.run calls."""
+  """A simple abstraction to accumulate data that we want to average.
 
-  def __init__(self,
-               name,
-               var=None,
-               acc_var_shape=None,
-               acc_var_dtype=None):
+  Basically this variable accumulates data across multiple inputs, and
+  then returns the average of these contributes on command.  This accumulation
+  can be reset by the user at any point.
+  """
+
+  def __init__(self, name, shape, dtype):
     """Constructs a new `AccumulatorVariable`.
 
-    If `var` is specified then accumulated value will be assigned to it after
-    every 'num_steps_for_update' runs.  Otherwise `acc_var_shape` and
-    `acc_var_dtype` must be specificed and the average accumulated value can be
-    read by invoking `self.accumulated_value` property.
-
     Args:
-      name: `string`. Name of the accumulator variable.
-      var: tf.Variable. A value for this variable will be assigned after
-        `num_steps` times `assign()` function is invoked.
-      acc_var_shape: Shape of the variable to be accumulated. Required only if
-        `var` is not passed.
-      acc_var_dtype: Data type of the variable to be accumulated. Required only
-        if `var` is not passed.
-
-    Raises:
-     ValueError: If `var` is not passed and `acc_var_shape` or `acc_var_dtype`
-       is None.
+      name: `string`. Scope for the variables.
+      shape: shape of the variable.
+      dtype: dtype of the variable.
     """
-
-    if var is None and (acc_var_shape is None or acc_var_dtype is None):
-      raise ValueError("If var is not specified then both acc_var_shape and"
-                       "acc_var_dtype must be passed.")
-
-    with tf.variable_scope("acc_var", reuse=tf.AUTO_REUSE):
-      if var is None:
-        self._var = tf.get_variable(
-            name + "_orig_var",
-            initializer=tf.zeros_initializer(),
-            shape=acc_var_shape,
-            dtype=acc_var_dtype,
-            trainable=False,
-            use_resource=True)
-      else:
-        self._var = var
-
+    with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
       self._acc_var = tf.get_variable(
-          name,
+          "acc_var",
+          shape=shape,
+          dtype=dtype,
           initializer=tf.zeros_initializer(),
-          shape=var.shape if var is not None else acc_var_shape,
-          dtype=var.dtype if var is not None else acc_var_dtype,
           trainable=False,
           use_resource=True)
 
+      # We may be able to make give this a VariableAggregation of
+      # ONLY_FIRST_REPLICA, because we only add 1 or reset it to 0 (it does not
+      # rely on per-replica values). If we do, we can update this in a per-
+      # replica context instead of the cross-replica context. This may improve
+      # efficiency when using a VariableSynchronization of ON_READ.
       self._counter = tf.get_variable(
+          "counter",
           shape=(),
           dtype=tf.int32,
-          name=name+"_counter",
           initializer=tf.zeros_initializer(),
           trainable=False,
           use_resource=True)
 
-  def accumulate(self,
-                 value,
-                 ema_decay=0.,
-                 num_steps_for_update=1,
-                 zero_debias=False):
-    """Adds `value` to the accumulator var and assigns to `var` conditionally.
-
-    Adds `value` to accumulator variable. If the function is called
-    `num_steps_for_update` number of times then the accumulated value, divided
-    by `num_steps_for_update`, is assigned to `var` and accumulated value is
-    reset to zero and new accumulation cycle is started.
-
-    Args:
-      value: A tensor, of the same shape and type as `var`
-      (or `acc_var_shape` and `acc_var_dtype`)passed to the initializer.
-      ema_decay: float, If the vale is zero, then accumulated value is assigned
-        directly used otherwise moving avergae of the accumulated value is
-        computed. Optional (Default: 0.)
-      num_steps_for_update: int, The number of steps to accumulate in each
-        cycle before resetting. Optional, Default: 1.
-      zero_debias: boolean, Whether to zero-debias the moving averages.
-        Optional, Default: False.
-
-    Returns:
-      An op which does accumulation and manages accumulation cycles.
-    """
-    inc_step_op = tf.assign_add(self._counter, 1)
-    acc_op = tf.assign_add(self._acc_var, value)
-
-    with tf.control_dependencies([inc_step_op]):
-      should_reset = tf.equal(tf.mod(self._counter, num_steps_for_update), 0)
-
-    with tf.control_dependencies([acc_op, inc_step_op]):
-      var_assign_op = tf.cond(
-          should_reset,
-          self._assign_acc_value_to_var(ema_decay, zero_debias,
-                                        num_steps_for_update), tf.no_op)
-
-      with tf.control_dependencies([var_assign_op]):
-        return tf.cond(should_reset, self._reset_var, tf.no_op)
+  def accumulate(self, value):
+    """Adds `value` to the accumulated data."""
+    inc_counter_op = smart_assign(self._counter, 1, assign_fn=tf.assign_add)
+    acc_op = smart_assign(self._acc_var, value, assign_fn=tf.assign_add)
+    return tf.group(inc_counter_op, acc_op)
 
   @property
   def value(self):
-    """Returns the value of accumulator variable which is reset."""
-    return tf.identity(self._acc_var)
+    """Returns the average of the accumulated values since the last reset."""
+    return self._acc_var / tf.cast(self._counter, self._acc_var.dtype)
 
-  @property
-  def accumulated_value(self):
-    """Returns the accumulated value."""
-    return tf.identity(self._var)
+  def read_value_and_reset(self):
+    """Same as `value` property but resets after the data is read."""
+    value = self.value
+    with tf.control_dependencies([value]):
+      with tf.control_dependencies([self.reset()]):
+        return tf.identity(value)
 
-  def _assign_acc_value_to_var(self, ema_decay, zero_debias,
-                               num_steps_for_update):
-    """Assigns average accumulate value to self._var."""
-    def _assign():
-      """No docstring needed, pylint."""
-      avg_acc_val = (1. / num_steps_for_update) * self._acc_var
-      ema_decay_tensor = tf.convert_to_tensor(ema_decay)
-
-      def _assign_moving_average():
-        # These moving averages use "slots" internally, which aren't implemented
-        # with resource variables. Thus I don't trust them.
-        # TODO(b/121265708): Someone should look into this!
-
-        # I'm adding this scope to try to force the use of resource variables
-        # by the "slots", but it probably won't work.
-        with tf.variable_scope("moving_avg", use_resource=True):
-          return tf.group(
-              moving_averages.assign_moving_average(
-                  self._var, avg_acc_val, ema_decay, zero_debias=zero_debias))
-
-      return tf.cond(tf.greater(ema_decay_tensor, 0.),
-                     _assign_moving_average,
-                     lambda: tf.group(tf.assign(self._var, avg_acc_val)))
-
-    return _assign
-
-  def _reset_var(self):
-    """Resets step counter and accumulator variable."""
-    var_zero_assign_op = tf.assign(
+  def reset(self):
+    """Resets the accumulated data to zero."""
+    var_reset_op = smart_assign(
         self._acc_var, tf.zeros(self._acc_var.shape, dtype=self._acc_var.dtype))
-    with tf.control_dependencies([var_zero_assign_op]):
-      return tf.group(tf.assign(self._counter, tf.constant(0)))
+    counter_reset_op = smart_assign(self._counter,
+                                    tf.constant(0, dtype=tf.int32))
+
+    return tf.group(var_reset_op, counter_reset_op)
 
 
 class PartitionedTensor(object):
@@ -875,6 +928,13 @@ class PartitionedTensor(object):
       raise ValueError("All tensors must have shape = %s (excluding batch "
                        "dimension)." % shape)
 
+    one_hot_depth = getattr(tensors[0], "one_hot_depth", None)
+    if not all(
+        getattr(tensor, "one_hot_depth", None) == one_hot_depth
+        for tensor in tensors):
+      raise ValueError(
+          "All tensors must have one_hot_depth {}".format(one_hot_depth))
+
     self.tensors = tensors
 
   @property
@@ -890,6 +950,10 @@ class PartitionedTensor(object):
   @property
   def dtype(self):
     return self.tensors[0].dtype
+
+  @property
+  def one_hot_depth(self):
+    return getattr(self.tensors[0], "one_hot_depth", None)
 
   def __str__(self):
     return "PartitionedTensor([%s, ...], dtype=%s, shape=%s)" % (
@@ -1006,3 +1070,119 @@ def assert_variables_match_pairs_list(a_and_vars,
     if error_message:
       error_str = "{} {}".format(error_message, error_str)
     raise ValueError(error_str)
+
+
+def multiline_print(lists):
+  """Prints multiple lines of output using tf.print."""
+
+  combined_list = []
+  combined_list += lists[0]
+
+  # We prepend newline characters to strings at the start of lines to avoid
+  # the ugly space intendations that tf.print's behavior of separating
+  # everything with a space would otherwise cause.
+  for item in lists[1:]:
+    if isinstance(item[0], str):
+      combined_list += (("\n" + item[0],) + item[1:])
+    else:
+      combined_list += (("\n",) + item)
+
+  return tf.print(*combined_list)
+
+
+def get_shape(tensor):
+  """Returns list of dimensions using ints only for statically known ones."""
+
+  if tensor.shape.dims is None:
+    raise ValueError("Unknown rank for tensor {}.".format(tensor))
+
+  static_shape = tensor.shape.as_list()
+  dynamic_shape = tf.shape(tensor)
+  return tuple(elt if elt is not None else dynamic_shape[idx]
+               for idx, elt in enumerate(static_shape))
+
+
+def cls_name(obj):
+  return obj.__class__.__name__
+
+
+def is_reference_variable(x):
+  return ((isinstance(x, tf.Variable)
+           and not resource_variable_ops.is_resource_variable(x))
+          or hasattr(x, "_should_act_as_ref_variable"))
+
+
+class MovingAverageVariable(object):
+  """A variable updated using weighted moving averages.
+
+  Note that to implement a traditional decaying exponential average one should
+  use a decay value smaller than 1.0 (e.g. 0.9), and set weight = 1.0 - decay.
+  Doing this and setting normalize_value to True will implement "zero-debiased"
+  decayed averages.
+  """
+
+  def __init__(self, name, shape, dtype, initializer=tf.zeros_initializer(),
+               normalize_value=True):
+    """Constructs a new `MovingAverageVariable`.
+
+    Args:
+      name: `string`. Scope for the variables.
+      shape: shape of the variable.
+      dtype: dtype of the variable.
+      initializer: initializer for the variable (see tf.get_variable). Should
+        be tf.zeros_initializer() unless you know what you are doing.
+        (Default: tf.zeros_initializer())
+      normalize_value: bool. If True we normalize the value property by the
+        total weight (which will be subject to decay). (Default: False)
+    """
+    self._normalize_value = normalize_value
+
+    with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
+      self._var = tf.get_variable(
+          "var",
+          shape=shape,
+          dtype=dtype,
+          initializer=initializer,
+          trainable=False,
+          use_resource=True)
+
+      self._total_weight = tf.get_variable(
+          "total_weight",
+          shape=(),
+          dtype=dtype,
+          initializer=tf.zeros_initializer(),
+          trainable=False,
+          use_resource=True)
+
+  @property
+  def dtype(self):
+    return self._var.dtype.base_dtype
+
+  @property
+  def value(self):
+    if self._normalize_value:
+      return self._var / self._total_weight
+    else:
+      return tf.identity(self._var)
+
+  def add_to_average(self, value, decay=1.0, weight=1.0):
+    """Add a value into the moving average.
+
+    Args:
+      value: a Tensor matching the shape and dtype that was passed to the
+        constructor.
+      decay: float or 0D Tensor. The current value is multiplied by this before
+        the value is added, as is the total accumulated weight. (Default: 1.0)
+      weight: float or 0D Tensor. The value being added is multiplied by this.
+        Also this is added to the total accumulated weight. (Default: 1.0)
+    """
+
+    decay = tf.convert_to_tensor(decay, dtype=self.dtype)
+    weight = tf.convert_to_tensor(weight, dtype=self.dtype)
+
+    update_var = smart_assign(self._var, decay * self._var + weight * value)
+
+    update_total_weight = smart_assign(self._total_weight,
+                                       decay * self._total_weight + weight)
+
+    return tf.group(update_var, update_total_weight)

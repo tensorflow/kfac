@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -58,22 +58,22 @@ class UtilsTest(tf.test.TestCase):
       self.assertEqual(1., pi_val)
 
 
-class FullFBTest(tf.test.TestCase):
+class NaiveFullFBTest(tf.test.TestCase):
 
-  def testFullFBInitSingleTensor(self):
+  def testNaiveFullFBInitSingleTensor(self):
     with tf.Graph().as_default():
       tf.set_random_seed(200)
       params = (tf.constant([1., 2.]), tf.constant(3.))
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
 
       self.assertAllEqual(params, block.tensors_to_compute_grads())
 
-  def testFullFBInitTensorTuple(self):
+  def testNaiveFullFBInitTensorTuple(self):
     with tf.Graph().as_default():
       tf.set_random_seed(200)
       params = (tf.constant([1., 2.]), tf.constant(3.))
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
 
       self.assertAllEqual(params, block.tensors_to_compute_grads())
@@ -82,7 +82,7 @@ class FullFBTest(tf.test.TestCase):
     with tf.Graph().as_default():
       tf.set_random_seed(200)
       params = (tf.constant([1., 2.]), tf.constant(3.))
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
 
       grads = (params[0]**2, tf.sqrt(params[1]))
@@ -92,7 +92,7 @@ class FullFBTest(tf.test.TestCase):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
       params = (tf.constant([1., 2.]), tf.constant(3.))
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
       grads = (params[0]**2, tf.sqrt(params[1]))
       block.instantiate_factors((grads,), 0.5)
@@ -113,7 +113,7 @@ class FullFBTest(tf.test.TestCase):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
       params = tf.constant([[1.], [2.]])
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
       grads = params**2
       block.instantiate_factors((grads,), 0.5)
@@ -134,7 +134,7 @@ class FullFBTest(tf.test.TestCase):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
       params = (tf.constant([1., 2.]), tf.constant(3.))
-      block = fb.FullFB(lc.LayerCollection(), params)
+      block = fb.NaiveFullFB(lc.LayerCollection(), params)
       block.register_additional_tower(32)
       grads = (tf.constant([2., 3.]), tf.constant(4.))
       damping = 0.5
@@ -143,8 +143,11 @@ class FullFBTest(tf.test.TestCase):
       block.register_inverse()
       block._factor.instantiate_inv_variables()
 
+      sess.run(tf.global_variables_initializer())
+
       # Make sure our inverse is something other than the identity.
-      sess.run(tf.assign(block._factor._cov, _make_psd(3)))
+      sess.run(block._factor._cov.add_to_average(_make_psd(3)))
+
       sess.run(block._factor.make_inverse_update_ops())
 
       v_flat = np.array([4., 5., 6.], dtype=np.float32)
@@ -237,7 +240,10 @@ class NaiveDiagonalFBTest(tf.test.TestCase):
       block._factor.instantiate_cov_variables()
 
       cov = tf.reshape(tf.constant([2., 3., 4.]), [-1, 1])
-      sess.run(tf.assign(block._factor._cov, cov))
+
+      sess.run(tf.global_variables_initializer())
+      sess.run(block._factor._cov.add_to_average(cov))
+
       sess.run(block._factor.make_inverse_update_ops())
 
       v_flat = np.array([4., 5., 6.], dtype=np.float32)
@@ -384,14 +390,24 @@ class FullyConnectedDiagonalFBTest(tf.test.TestCase):
       block._factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      sess.run(block._factor.make_covariance_update_op(0.0))
+      sess.run(block._factor.make_covariance_update_op(0.0, 1.0))
       multiply_result = sess.run(block.multiply(params))
       multiply_inverse_result = sess.run(block.multiply_inverse(params))
 
     return multiply_result, multiply_inverse_result
 
 
-class EmbeddingKFACFBTest(tf.test.TestCase):
+class FullyConnectedKFACBasicFBSparseInputTest(tf.test.TestCase):
+
+  def testFullyConnectedKFACBasicFBInit(self):
+    with tf.Graph().as_default():
+      tf.set_random_seed(200)
+      inputs = tf.constant([1., 2.])
+      outputs = tf.constant([3., 4.])
+      block = fb.FullyConnectedKFACBasicFB(lc.LayerCollection())
+      block.register_additional_tower(inputs, outputs)
+
+      self.assertAllEqual([outputs], block.tensors_to_compute_grads())
 
   def testInstantiateFactors(self):
     with tf.Graph().as_default():
@@ -399,10 +415,13 @@ class EmbeddingKFACFBTest(tf.test.TestCase):
 
       # Create a Fisher Block.
       vocab_size = 5
-      block = fb.EmbeddingKFACFB(lc.LayerCollection(), vocab_size)
+      block = fb.FullyConnectedKFACBasicFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       # Add some examples.
       inputs = tf.constant([[0, 1], [1, 2], [2, 3]])
+      inputs.one_hot_depth = vocab_size
       outputs = tf.constant([[0.], [1.], [2.]])
       block.register_additional_tower(inputs, outputs)
 
@@ -417,10 +436,13 @@ class EmbeddingKFACFBTest(tf.test.TestCase):
 
       # Create a Fisher Block.
       vocab_size = 5
-      block = fb.EmbeddingKFACFB(lc.LayerCollection(), vocab_size)
+      block = fb.FullyConnectedKFACBasicFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       # Add some examples.
       inputs = tf.constant([[0, 1], [1, 2], [2, 3]])
+      inputs.one_hot_depth = vocab_size
       outputs = tf.constant([[0.], [1.], [2.]])
       block.register_additional_tower(inputs, outputs)
 
@@ -561,8 +583,9 @@ class FullyConnectedKFACBasicFBTest(tf.test.TestCase):
       block._input_factor.instantiate_cov_variables()
       block._output_factor.instantiate_cov_variables()
 
-      sess.run(tf.assign(block._input_factor._cov, _make_psd(3)))
-      sess.run(tf.assign(block._output_factor._cov, _make_psd(2)))
+      sess.run(tf.global_variables_initializer())
+      sess.run(block._input_factor._cov.add_to_average(_make_psd(3)))
+      sess.run(block._output_factor._cov.add_to_average(_make_psd(2)))
 
       block.register_inverse()
       block._input_factor.instantiate_inv_variables()
@@ -758,7 +781,7 @@ class ConvDiagonalFBTest(tf.test.TestCase):
       block._factor.instantiate_cov_variables()
 
       sess.run(tf.global_variables_initializer())
-      sess.run(block._factor.make_covariance_update_op(0.0))
+      sess.run(block._factor.make_covariance_update_op(0.0, 1.0))
       multiply_result = sess.run(block.multiply(params))
       multiply_inverse_result = sess.run(block.multiply_inverse(params))
 
@@ -778,7 +801,7 @@ class DepthwiseConvKFCBasicFBTest(tf.test.TestCase):
           layer_collection, params=params, strides=[1, 1, 1, 1], padding='SAME')
       block.register_additional_tower(inputs, outputs)
       grads = outputs**2
-      block.instantiate_factors(([grads],), 0.5)
+      block.instantiate_factors(((grads,),), 0.5)
 
   def testMultiplyInverse(self):
     with tf.Graph().as_default(), self.test_session() as sess:
@@ -791,7 +814,7 @@ class DepthwiseConvKFCBasicFBTest(tf.test.TestCase):
           layer_collection, params=params, strides=[1, 1, 1, 1], padding='SAME')
       block.register_additional_tower(inputs, outputs)
       grads = outputs**2
-      block.instantiate_factors(([grads],), 0.5)
+      block.instantiate_factors(((grads,),), 0.5)
       block._input_factor.instantiate_cov_variables()
       block._output_factor.instantiate_cov_variables()
       block.register_inverse()
@@ -941,8 +964,10 @@ class ConvKFCBasicFBTest(tf.test.TestCase):
       block._input_factor.instantiate_inv_variables()
       block._output_factor.instantiate_inv_variables()
 
-      sess.run(tf.assign(block._input_factor._cov, _make_psd(8)))
-      sess.run(tf.assign(block._output_factor._cov, _make_psd(2)))
+      sess.run(tf.global_variables_initializer())
+      sess.run(block._input_factor._cov.add_to_average(_make_psd(8)))
+      sess.run(block._output_factor._cov.add_to_average(_make_psd(2)))
+
       sess.run(block._input_factor.make_inverse_update_ops())
       sess.run(block._output_factor.make_inverse_update_ops())
 
@@ -993,17 +1018,21 @@ class FullyConnectedSeriesFBTest(tf.test.TestCase):
       block.instantiate_factors((((grads,),),), 0.5)
 
 
-class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
+class FullyConnectedMultiIndepFBSparseInputTest(tf.test.TestCase):
 
   def testInstantiateFactors(self):
     with tf.Graph().as_default():
       tf.set_random_seed(200)
 
       vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size)
+      block = fb.FullyConnectedMultiIndepFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       inputs = [tf.constant([[0, 1], [1, 2], [2, 3]]),
                 tf.constant([[0, 0], [0, 0], [0, 4]])]
+      for input in inputs:
+        input.one_hot_depth = vocab_size
       outputs = [tf.constant([[0.], [1.], [2.]]),
                  tf.constant([[0.1], [0.], [0.]])]
       block.register_additional_tower(inputs, outputs)
@@ -1017,10 +1046,13 @@ class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
       tf.set_random_seed(200)
 
       vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size,
-                                           num_uses=2)
+      block = fb.FullyConnectedMultiIndepFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True,
+          num_uses=2)
 
       inputs = tf.constant([[0, 1], [1, 2], [2, 3]])
+      inputs.one_hot_depth = vocab_size
       outputs = tf.constant([[0.], [1.], [2.]])
       block.register_additional_tower(inputs, outputs)
 
@@ -1028,51 +1060,19 @@ class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
       damping = tf.constant(0.)
       block.instantiate_factors(((grads,),), damping)
 
-  def testInstantiateFactorsTranspose(self):
-    with tf.Graph().as_default():
-      tf.set_random_seed(200)
-
-      vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size)
-
-      inputs = [tf.constant([[0, 1], [1, 2], [2, 3]]),
-                tf.constant([[0.1], [0.], [0.]])]
-      outputs = [tf.constant([[0.], [1.], [2.]]),
-                 tf.constant([[0, 0], [0, 0], [0, 4]])]
-      block.register_additional_tower(inputs, outputs, transpose=[False, True])
-
-      grads = [output**2 for output in outputs]
-      damping = tf.constant(0.)
-      block.instantiate_factors(((grads,),), damping)
-
-  def testInstantiateFactorsTransposeConsistency(self):
-    with tf.Graph().as_default():
-      tf.set_random_seed(200)
-
-      vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size)
-
-      inputs = [tf.constant([[0, 1], [1, 2], [2, 3]]),
-                tf.constant([[0.1], [0.], [0.]])]
-      outputs = [tf.constant([[0.], [1.], [2.]]),
-                 tf.constant([[0, 0], [0, 0], [0, 4]])]
-      block.register_additional_tower(inputs, outputs, transpose=[False, True])
-      block.register_additional_tower(inputs, outputs, transpose=[False, True])
-      with self.assertRaises(ValueError):
-        block.register_additional_tower(inputs, outputs)
-      with self.assertRaises(ValueError):
-        block.register_additional_tower(inputs, outputs,
-                                        transpose=[True, False])
-
   def testMultiplyInverse(self):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
 
       vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size)
+      block = fb.FullyConnectedMultiIndepFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       inputs = [tf.constant([[0, 1], [1, 2], [2, 3]]),
                 tf.constant([[0, 0], [0, 0], [0, 4]])]
+      for input in inputs:
+        input.one_hot_depth = vocab_size
       outputs = [tf.constant([[0.], [1.], [2.]]),
                  tf.constant([[0.1], [0.], [0.]])]
       block.register_additional_tower(inputs, outputs)
@@ -1106,18 +1106,22 @@ class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
       self.assertAlmostEqual(
           sess.run(expected_result[4]), sess.run(result.values[2]))
 
-  def testMultiplyInverseTranspose(self):
+  def testMultiplyInverseSparse(self):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
 
       vocab_size = 5
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection(), vocab_size)
+      block = fb.FullyConnectedMultiIndepFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       inputs = [tf.constant([[0, 1], [1, 2], [2, 3]]),
-                tf.constant([[0.1], [0.], [0.]])]
+                tf.constant([[0, 0], [0, 0], [0, 4]])]
+      for input in inputs:
+        input.one_hot_depth = vocab_size
       outputs = [tf.constant([[0.], [1.], [2.]]),
-                 tf.constant([[0, 0], [0, 0], [0, 4]])]
-      block.register_additional_tower(inputs, outputs, transpose=[False, True])
+                 tf.constant([[0.1], [0.], [0.]])]
+      block.register_additional_tower(inputs, outputs)
 
       grads = [output**2 for output in outputs]
       damping = tf.constant(0.)
@@ -1152,13 +1156,15 @@ class EmbeddingKFACMultiIndepFBTest(tf.test.TestCase):
     with tf.Graph().as_default(), self.test_session() as sess:
       tf.set_random_seed(200)
 
-      block = fb.EmbeddingKFACMultiIndepFB(lc.LayerCollection())
+      block = fb.FullyConnectedMultiIndepFB(
+          lc.LayerCollection(),
+          diagonal_approx_for_input=True)
 
       inputs = [tf.constant([[0., 1], [1, 2], [2, 3]]),
-                tf.constant([[0.1], [0.], [0.]])]
+                tf.constant([[0., 0], [0, 0], [0, 4]])]
       outputs = [tf.constant([[0.], [1.], [2.]]),
-                 tf.constant([[0., 0], [0, 0], [0, 4]])]
-      block.register_additional_tower(inputs, outputs, transpose=[False, True])
+                 tf.constant([[0.1], [0.], [0.]])]
+      block.register_additional_tower(inputs, outputs)
 
       grads = [output**2 for output in outputs]
       damping = tf.constant(0.)

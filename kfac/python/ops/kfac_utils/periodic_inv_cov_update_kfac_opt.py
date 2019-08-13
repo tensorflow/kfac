@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import warnings
 # Dependency imports
 
 import tensorflow as tf
@@ -52,20 +53,20 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                cov_update_every=1,
                num_burnin_steps=0,
                **kwargs):
-    """Initializes PeriodicInvCovUpdateKfacOptimizer.
+    """Initializes a PeriodicInvCovUpdateKfacOptimizer object.
 
     See the docstring for `KfacOptimizer` class (in optimizer.py) for
     complete list of arguments (there are many!).
 
     Please keep in mind that while the K-FAC code loosely conforms to
-    TensorFlow's Optimizer API it can't be used naively as a "drop in
+    TensorFlow's Optimizer API, it can't be used naively as a "drop in
     replacement" for basic classes like MomentumOptimizer.  Using it
     properly with SyncReplicasOptimizer, for example, requires special care.
 
     See the various examples in the "examples" directory for a guide about
     how to use K-FAC in various contexts and various systems, like
     TF-Estimator. See in particular the convnet example.  google/examples
-    also contains an example using TPUEstimator and CrossShardOptimizer.
+    also contains an example using TPUEstimator.
 
     Note that not all use cases will work with
     PeriodicInvCovUpdateKfacOptimizer. Sometimes you will have to use the base
@@ -75,15 +76,19 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
 
     Args:
       invert_every: int. The inversion ops are run once every `invert_every`
-        calls to optimizer.minimize, (Default: 10)
-      cov_update_every: int. The covariance update ops are run once every
-        `covariance_update_every` calls to optimizer.minimize. (Default: 1)
+        executions of the training op. (Default: 10)
+      cov_update_every: int. The 'covariance update ops' are run once every
+        `covariance_update_every` executions of the training op. (Default: 1)
       num_burnin_steps: int. For the first `num_burnin_steps` steps the
         optimizer will only perform cov updates. Note: this doesn't work with
         CrossShardOptimizer since the custom minimize method implementation
         will be ignored. (Default: 0)
       **kwargs: Arguments to `KfacOptimizer` class.
     """
+
+    if "cov_ema_decay" in kwargs:
+      kwargs["cov_ema_decay"] = kwargs["cov_ema_decay"]**cov_update_every
+
     super(PeriodicInvCovUpdateKfacOpt, self).__init__(**kwargs)
 
     self._invert_every = invert_every
@@ -92,14 +97,16 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
 
     self._made_vars_already = False
 
-    if self._num_burnin_steps % self._num_steps_per_cov_update != 0:
-      raise ValueError("num_burnin_steps must be divisible by "
-                       "num_steps_per_cov_update.")
+    if self._adapt_damping:
+      if self._damping_adaptation_interval % self._invert_every != 0:
+        raise ValueError("damping_adaptation_interval must be divisible by "
+                         "invert_every.")
 
     with tf.variable_scope(self.get_name()):
       self._burnin_counter = tf.get_variable(
           "burnin_counter", dtype=tf.int64, shape=(), trainable=False,
-          initializer=tf.zeros_initializer, use_resource=True)
+          initializer=tf.zeros_initializer, use_resource=True,
+          aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA)
 
   def minimize(self,
                loss,
@@ -118,7 +125,9 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     self._made_vars_already = True
 
     def update_cov_and_burnin_counter():
-      cov_update = tf.group(*(thunk() for thunk in cov_update_thunks))
+      cov_update = tf.group(*(thunk(ema_decay=1.0,
+                                    should_write=True)
+                              for thunk in cov_update_thunks))
 
       burnin_counter_update = self._burnin_counter.assign(
           self._burnin_counter + 1)
@@ -159,6 +168,12 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     if not self._made_vars_already:
       (cov_update_thunks,
        inv_update_thunks) = self.make_vars_and_create_op_thunks()
+      warnings.warn("It looks like apply_gradients() was called before "
+                    "minimze() was called. This is not recommended, and you "
+                    "should avoid using optimizer wrappers like "
+                    "CrossShardOptimizer with K-FAC that try to bypass the "
+                    "minimize() method. The burn-in feature won't work when "
+                    "the class is used this way, for example.")
     else:
       (_, cov_update_thunks,
        _, inv_update_thunks) = self.create_ops_and_vars_thunks()
@@ -170,9 +185,9 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         lambda: tf.group(*(thunk() for thunk in cov_update_thunks)),
         tf.no_op)
 
-    maybe_adapt_damping = self.maybe_adapt_damping()
-
-    with tf.control_dependencies([maybe_cov_updates, maybe_adapt_damping]):
+    maybe_pre_update_adapt_damping = self.maybe_pre_update_adapt_damping()
+    with tf.control_dependencies([maybe_cov_updates,
+                                  maybe_pre_update_adapt_damping]):
       should_do_inv_updates = tf.equal(tf.mod(self.counter,
                                               self._invert_every), 0)
       maybe_inv_updates = tf.cond(

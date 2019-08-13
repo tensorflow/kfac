@@ -1,4 +1,4 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,8 +23,15 @@ import numpy as np
 import tensorflow as tf
 
 from kfac.python.ops import estimator
+from kfac.python.ops import fisher_factors as ff
 from kfac.python.ops import layer_collection as lc
 from kfac.python.ops import utils
+
+
+# We need to set these constants since the numerical values used in the tests
+# were chosen when these used to be the defaults.
+ff.set_global_constants(zero_debias=False)
+
 
 _ALL_ESTIMATION_MODES = ["gradients", "empirical", "curvature_prop", "exact"]
 
@@ -213,7 +220,7 @@ class EstimatorTest(tf.test.TestCase):
       self.assertEqual(inv_update_ops[0].device, "/device:CPU:0")
       self.assertEqual(inv_update_ops[1].device, "/device:CPU:1")
       cov_matrices = [
-          fisher_factor.cov
+          fisher_factor._cov._var
           for fisher_factor in self.layer_collection.get_factors()
       ]
       inv_matrices = [
@@ -266,13 +273,10 @@ class EstimatorTest(tf.test.TestCase):
       # Assign each covariance matrix a value other than the identity. This
       # ensures that the inverse matrices are updated to something different as
       # well.
-      cov_matrices = [
-          fisher_factor.cov
-          for fisher_factor in self.layer_collection.get_factors()
-      ]
       sess.run([
-          cov_matrix.assign(2 * tf.eye(int(cov_matrix.shape[0])))
-          for cov_matrix in cov_matrices
+          fisher_factor._cov.add_to_average(
+              2 * tf.eye(int(fisher_factor._cov_shape[0])))
+          for fisher_factor in self.layer_collection.get_factors()
       ])
 
       for i in range(len(inv_matrices)):
