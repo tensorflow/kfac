@@ -44,8 +44,59 @@ _MUTABLE_HYPER_PARAMS = {'learning_rate',
                          'momentum',
                          'damping',
                          'weight_decay_coeff',
-                         'norm_constraint',
-                         'batch_size'}
+                         'norm_constraint'}
+
+
+def _configure_kfac_kwargs_for_adaptive(kfac_kwargs, adaptive):
+  """Checks and fills in some required kwargs to use an adaptive mode.
+
+  This will set up kfac_kwargs for adaptive, adapt_damping, and/or qmodel
+  momentum, if needed. It will not check for train_batch or batch_size, as that
+  check happens right before the minimize. It will set the following if not set
+  by the user:
+
+  If adaptive=True:
+    - adapt_damping=True, momentum=None, momentum_type='qmodel'
+    - The checks listed below.
+
+  If adapt_damping=True:
+    - use_passed_loss=True, and then it will get the loss_tensor from minimize.
+    - update_damping_immediately=True
+    - damping_adaptation_interval=5 if the user hasn't set this already.
+    - invert_every=5 if the user hasn't set this already.
+
+  If momentum_type='qmodel' or momentum_type='qmodel_fixedmu':
+    - Ensures learning rate and momentum are None.
+
+  Args:
+   kfac_kwargs: dict of keyword arguments to be passed to
+     PeriodicInvCovUpdateKfacOpt.
+   adaptive: bool indicating the optimizer is in adaptive mode.
+  """
+  if adaptive:
+    kfac_kwargs.update({
+        'adapt_damping': True,
+        'momentum': None,
+        'momentum_type': 'qmodel',
+    })
+
+  if kfac_kwargs.get('momentum_type', 'regular').lower().startswith('qmodel'):
+    if kfac_kwargs['learning_rate']:
+      raise ValueError('learning_rate must be None to use adaptive/qmodel.')
+    if kfac_kwargs.get('momentum', None):
+      raise ValueError('momentum must be None to use adaptive/qmodel.')
+
+  if kfac_kwargs.get('adapt_damping', False):
+    defaults = {'use_passed_loss': True, 'update_damping_immediately': True}
+    # This way, we keep the user's preferences and only replace missing items.
+    defaults.update(kfac_kwargs)
+    kfac_kwargs.update(defaults)
+
+    if not ('invert_every' in kfac_kwargs and
+            'damping_adaptation_interval' in kfac_kwargs):
+      # damping_adaptation_interval % invert_every must = 0
+      kfac_kwargs['invert_every'] = 5
+      kfac_kwargs['damping_adaptation_interval'] = 5
 
 
 class Kfac(tf.keras.optimizers.Optimizer):
@@ -60,6 +111,8 @@ class Kfac(tf.keras.optimizers.Optimizer):
                loss_weights=None,
                fisher_approx=None,
                layer_collection=None,
+               adaptive=False,
+               train_batch=None,
                name=None,
                seed=None,
                **kfac_kwargs):
@@ -68,6 +121,20 @@ class Kfac(tf.keras.optimizers.Optimizer):
     If you construct this Optimizer without a model with a loss, model and loss,
     or a layer_collection, you must call register_layers before using the
     optimizer.
+
+    If you use adaptive, adapt_damping, or qmodel_momentum, this class will set
+    up the required loss functions and tensors. You must pass the train_batch
+    tensors as a tuple (x, y). If the batch_size cannot be inferred from the
+    train_batch[0] tensor, you pass in the batch_size in the constructor. You
+    may not use numpy arrays as input when using the adaptive mode. If you do
+    not use minimize, you must also provide the loss_tensor.
+
+    When using Distribution Strategy, K-FAC expects an unscaled loss tensor
+    (i.e. not scaled by 1.0 / global_batch_size), unlike what is commonly
+    recommended. This means you cannot use K-FAC with a Distribution Strategy
+    and model.fit at the same time, since model.fit does this scaling for you.
+    Instead, use a custom training loop with Distribution Strategy (there are
+    examples in the Github repo).
 
     Args:
       _sentinel: Used to prevent positional parameters. Internal, do not use.
@@ -99,6 +166,15 @@ class Kfac(tf.keras.optimizers.Optimizer):
       layer_collection: Only use this argument when you have an unsupported
         model architecture and so manually register the layers. Refer to
         kfac.KfacOptimizer for a detailed description.
+      adaptive: Whether this optimizer is in adaptive mode or not. In adaptive
+        mode, we set momentum_type='qmodel' and adapt_damping=True, so you must
+        provide the damping (used as the initial value). learning_rate and
+        momentum must be None. You must provide a train_batch and potentially
+        a batch_size if we cannot infer the batch_size from the train_batch.
+      train_batch: A tuple (input, label). The input must be a tensor or a list
+        of tensors that you can call the model on. The label must be a tensor
+        or list of tensors compatible with the loss_fn. See utils.get_loss_fn
+        for the standard loss_fn we create, or you can provide a custom loss_fn.
       name: Optional name for operations created when applying gradients.
         Defaults to "kfac".
       seed: Optional integer specifying the TensorFlow random seed. To get
@@ -113,6 +189,7 @@ class Kfac(tf.keras.optimizers.Optimizer):
       ValueError: If clipvalue or clipnorm arguments are used.
       ValueError: If positional arguments are used (or _sentinel is used).
       ValueError: If damping is not provided.
+      ValueError: If learning_rate or momentum are set with adaptive=True.
     """
     if tf.executing_eagerly():
       warnings.warn('Eager mode appears to be enabled. Kfac is untested in '
@@ -135,12 +212,18 @@ class Kfac(tf.keras.optimizers.Optimizer):
                         'learning_rate': learning_rate,
                         'damping': damping})
 
+    _configure_kfac_kwargs_for_adaptive(kfac_kwargs, adaptive)
+
     self._optimizer = None
     self._layer_collection = None
     self._model = model
     self._loss = loss
     self._have_tracked_vars = False
     self._tf_var_scope = self._name + '/tf_vars'
+    # We use _kfac_kwargs and _config in various parts in the code below.
+    # _kfac_kwargs is checked when we want to know only what the user passed.
+    # _config is used when we want user selections with the default kwargs as a
+    # fallback.
     self._kfac_kwargs = kfac_kwargs
     self._layer_collection_kwargs = {
         'loss_weights': loss_weights,
@@ -168,6 +251,8 @@ class Kfac(tf.keras.optimizers.Optimizer):
 
     if layer_collection:
       self.register_layers(layer_collection=layer_collection)
+    if train_batch and self._kfac_kwargs.get('adapt_damping', False):
+      self.register_train_batch(train_batch=train_batch)
 
   @property
   def name(self):
@@ -217,9 +302,32 @@ class Kfac(tf.keras.optimizers.Optimizer):
       layer_collection = utils.get_layer_collection(
           model, loss, **self._layer_collection_kwargs)
     self._layer_collection = layer_collection
-    self._kfac_kwargs['var_list'] = self._layer_collection.registered_variables
+    self._kfac_kwargs['var_list'] = layer_collection.registered_variables
+
+  def register_train_batch(self, train_batch, batch_size=None):
+    """Configures the train_batch tuple and batch_size for adaptive damping."""
+    if not isinstance(train_batch, tuple):
+      raise ValueError('You must provide the train_batch tuple of inputs to '
+                       'use adaptive/adapt_damping mode.')
+    elif not all(isinstance(inp, tf.Tensor) for inp in train_batch):
+      raise ValueError('You must use TF tensors as input.')
+    self._kfac_kwargs['train_batch'] = train_batch
+
+    if batch_size:
+      self._kfac_kwargs['batch_size'] = batch_size
+    elif 'batch_size' not in self._kfac_kwargs:
+      inferred_batch_size = train_batch[0].shape.as_list()[0]
+      if inferred_batch_size:
+        self._kfac_kwargs['batch_size'] = inferred_batch_size
+      else:
+        raise ValueError('Could not infer batch_size from the train_batch. '
+                         'Please provide it in the optimizer constructor or '
+                         'through register_train_batch.')
 
   def minimize(self, loss, var_list, grad_loss=None, name=None):
+    if (self._config['use_passed_loss'] and 'loss' not in self._kfac_kwargs):
+      self._kfac_kwargs['loss'] = loss
+
     return self._call_and_track_vars(
         'minimize', loss, var_list=var_list, grad_loss=grad_loss, name=name)
 
@@ -242,6 +350,15 @@ class Kfac(tf.keras.optimizers.Optimizer):
       return
     if not self._layer_collection:
       self.register_layers(self._model, self._loss)
+
+    if self._config['adapt_damping']:
+      if 'train_batch' not in self._kfac_kwargs:
+        raise ValueError('Must provide a train_batch tuple to use adaptive '
+                         'damping. Use register_train_batch or pass it in '
+                         'during optimizer construction.')
+      if 'loss_fn' not in self._kfac_kwargs:
+        self._kfac_kwargs['loss_fn'] = utils.get_loss_fn(
+            self._model, self._loss, loss_weights=self._config['loss_weights'])
 
     with tf.name_scope(self._name):
       with tf.init_scope():

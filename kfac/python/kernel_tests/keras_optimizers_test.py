@@ -49,10 +49,11 @@ def _get_synthetic_mnist_dataset(train_size=64, test_size=16):
           (images[train_size:], one_hot_labels[train_size:]))
 
 
-def _get_synthetic_mnist_train_tensors(train_size=64, batch_size=10):
+def _get_synthetic_mnist_train_tensors(
+    train_size=64, batch_size=10, drop_remainder=False):
   (x_train, y_train), _ = _get_synthetic_mnist_dataset(train_size=train_size)
   dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-  dataset = dataset.repeat().batch(batch_size)
+  dataset = dataset.repeat().batch(batch_size, drop_remainder=drop_remainder)
   return dataset.make_one_shot_iterator().get_next()
 
 
@@ -359,8 +360,7 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
   @parameterized.named_parameters(('_Tensor', tf.convert_to_tensor),
                                   ('_Float', float))
   def testGettingHyper(self, hyper_ctor):
-    kwarg_values = {'learning_rate': 3, 'damping': 20, 'momentum': 13,
-                    'batch_size': 16}
+    kwarg_values = {'learning_rate': 3, 'damping': 20, 'momentum': 13}
     kwargs = {k: hyper_ctor(v) for k, v in kwarg_values.items()}
     opt = optimizers.Kfac(model=_simple_mlp(), loss='mse', **kwargs)
     get_value = backend.get_value
@@ -372,7 +372,6 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
       self.assertEqual(get_value(opt.lr), get_value(tf_opt.learning_rate))
       self.assertEqual(get_value(opt.damping), get_value(tf_opt.damping))
       self.assertEqual(get_value(opt.momentum), get_value(tf_opt.momentum))
-      self.assertEqual(get_value(opt.batch_size), get_value(tf_opt._batch_size))
 
   def testGettingVariableHyperFails(self):
     self.skipTest('This is not fixed in TF 1.14 yet.')
@@ -428,7 +427,7 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
       (('_' + name, name, val + 1)
        for val, name in enumerate(optimizers._MUTABLE_HYPER_PARAMS)))
   def testModifyingTensorHypersFails(self, name, val):
-    kwargs = {'learning_rate': 3, 'damping': 5, 'momentum': 7, 'batch_size': 9}
+    kwargs = {'learning_rate': 3, 'damping': 5, 'momentum': 7}
     kwargs[name] = tf.convert_to_tensor(val)
     opt = optimizers.Kfac(model=_simple_mlp(), loss='mse', **kwargs)
     with self.subTest(name='AssignedCorrectly'):
@@ -783,15 +782,15 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
       sess.run([train_op])
 
   @parameterized.named_parameters(
-      ('_NoKwargs', {'norm_constraint', 'batch_size'}, {}),
+      ('_NoKwargs', {'norm_constraint'}, {}),
       ('_MomentumNormKwargs',
        set(),
-       {'momentum': 1, 'norm_constraint': 2, 'batch_size': 16}),
+       {'momentum': 1, 'norm_constraint': 2}),
       ('_QModel',
-       {'momentum', 'learning_rate', 'norm_constraint', 'batch_size'},
+       {'momentum', 'learning_rate', 'norm_constraint'},
        {'momentum': None, 'momentum_type': 'qmodel', 'learning_rate': None}),
       ('_AdaptiveDamping',
-       {'damping', 'norm_constraint', 'batch_size'},
+       {'damping', 'norm_constraint'},
        {'adapt_damping': True, 'damping_adaptation_interval': 20}))
   def testMutableHypers(self, not_mutable, kwargs_update):
     kwargs = {'learning_rate': 0.01, 'damping': 0.001}
@@ -818,6 +817,153 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
     with self.assertRaisesRegex(ValueError,
                                 '.*after the variables are created.*'):
       optimizer.name = 'another_name'
+
+  @parameterized.named_parameters(
+      ('_AdaptDamping', {'adapt_damping': True, 'learning_rate': 0.1}),
+      ('_Adaptive', {'adaptive': True, 'qmodel_update_rescale': 0.01}))
+  def testAdaptiveModelFit(self, adaptive_kwargs):
+    rands = lambda: np.random.random((100, 1)).astype(np.float32)
+    dataset = tf.data.Dataset.from_tensor_slices((rands(), rands()))
+    dataset = dataset.repeat().batch(10, drop_remainder=True)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+
+    model = tf.keras.Sequential([tf.keras.layers.Dense(1, input_shape=(1,))])
+    loss = 'mse'
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    optimizer = optimizers.Kfac(damping=10.,
+                                train_batch=train_batch,
+                                model=model,
+                                loss=loss,
+                                **adaptive_kwargs)
+    model.compile(optimizer, loss)
+    model.fit(train_batch, steps_per_epoch=10, epochs=1)
+
+  @parameterized.named_parameters(('_Fused', True), ('_NotFused', False))
+  def testAdaptiveModelFitBatchnorm(self, is_fused):
+    train_batch = _get_synthetic_mnist_train_tensors(drop_remainder=True)
+    model =  tf.keras.Sequential([
+      layers.Conv2D(13, 5, input_shape=(28,28,1)),
+      layers.BatchNormalization(fused=is_fused),
+      layers.Conv2D(23, 3),
+      layers.LayerNormalization(),
+      layers.GlobalMaxPool2D(),
+      layers.Dense(10, activation='softmax', name='output_test')
+    ])
+    loss = 'categorical_crossentropy'
+    optimizer = optimizers.Kfac(damping=10.,
+                                adaptive=True,
+                                train_batch=train_batch,
+                                model=model,
+                                loss=loss)
+    model.compile(optimizer, loss)
+    model.train_on_batch(x=train_batch[0], y=train_batch[1])
+
+  def testInferredBatchSize(self):
+    dataset = tf.data.Dataset.from_tensors(([1.], [1.]))
+    dataset = dataset.repeat().batch(11, drop_remainder=True)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+
+    model = tf.keras.Sequential([tf.keras.layers.Dense(1, input_shape=(1,))])
+    loss = 'mse'
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    optimizer = optimizers.Kfac(damping=10.,
+                                train_batch=train_batch,
+                                model=model,
+                                adaptive=True,
+                                loss=loss,
+                                qmodel_update_rescale=0.01)
+    model.compile(optimizer, loss)
+    model.train_on_batch(train_batch[0], train_batch[1])
+    self.assertEqual(
+        tf.keras.backend.get_value(optimizer.optimizer._batch_size), 11)
+
+  @parameterized.named_parameters(('_Adaptive', {'adaptive': True}),
+                                  ('_AdaptDamping', {'adapt_damping': True}))
+  def testInferredBatchSizeFail(self, kfac_kwargs):
+    dataset = tf.data.Dataset.from_tensors(([1.], [1.]))
+    dataset = dataset.repeat().batch(11, drop_remainder=False)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    with self.assertRaisesRegex(ValueError, 'Could not infer batch_size.*'):
+      optimizer = optimizers.Kfac(damping=10.,
+                                  train_batch=train_batch,
+                                  **kfac_kwargs)
+
+  def testOverrideAdaptiveDefaults(self):
+    dataset = tf.data.Dataset.from_tensors(([1.], [1.]))
+    dataset = dataset.repeat().batch(11, drop_remainder=False)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+
+    model = tf.keras.Sequential([tf.keras.layers.Dense(1, input_shape=(1,))])
+    loss = 'mse'
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    optimizer = optimizers.Kfac(damping=10.,
+                                adaptive=True,
+                                train_batch=train_batch,
+                                model=model,
+                                batch_size=11,
+                                invert_every=1,
+                                damping_adaptation_interval=2,
+                                loss=loss,
+                                qmodel_update_rescale=0.01)
+    model.compile(optimizer, loss)
+    model.train_on_batch(train_batch[0], train_batch[1])
+    self.assertEqual(optimizer.optimizer._invert_every, 1)
+    self.assertEqual(optimizer.optimizer._damping_adaptation_interval, 2)
+
+  @parameterized.named_parameters(('_Adaptive', {'adaptive': True}),
+                                  ('_Qmodel', {'momentum_type': 'qmodel'}))
+  def testAdaptiveWithLR(self, kfac_kwargs):
+    dataset = tf.data.Dataset.from_tensors(([1.], [1.]))
+    dataset = dataset.repeat().batch(11, drop_remainder=True)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    with self.assertRaisesRegex(ValueError, 'learning_rate must be None.*'):
+      optimizer = optimizers.Kfac(damping=10.,
+                                  train_batch=train_batch,
+                                  learning_rate=0.1,
+                                  **kfac_kwargs)
+
+  def testCustomLossFn(self):
+    rands = lambda: np.random.random((100, 1)).astype(np.float32)
+    dataset = tf.data.Dataset.from_tensor_slices((rands(), rands()))
+    dataset = dataset.repeat().batch(10, drop_remainder=True)
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    model = tf.keras.Sequential([tf.keras.layers.Dense(1, input_shape=(1,))])
+
+    def loss_fn(inputs):
+      mse = tf.keras.losses.mean_squared_error(model(inputs[0]), inputs[1])
+      return tf.reduce_mean(mse)
+
+    loss = 'mse'
+    train_batch = dataset.make_one_shot_iterator().get_next()
+    optimizer = optimizers.Kfac(damping=10.,
+                                train_batch=train_batch,
+                                adaptive=True,
+                                model=model,
+                                loss=loss,
+                                loss_fn=loss_fn,
+                                qmodel_update_rescale=0.01)
+    model.compile(optimizer, loss)
+    model.fit(train_batch, steps_per_epoch=10, epochs=1)
+    self.assertEqual(loss_fn, optimizer.optimizer._loss_fn)
+
+  def testRegisterTrainBatch(self):
+    model =  tf.keras.Sequential([
+      layers.Conv2D(13, 5, input_shape=(28,28,1)),
+      layers.BatchNormalization(),
+      layers.Conv2D(23, 3),
+      layers.LayerNormalization(),
+      layers.GlobalMaxPool2D(),
+      layers.Dense(10, activation='softmax', name='output_test')
+    ])
+    loss = 'categorical_crossentropy'
+    optimizer = optimizers.Kfac(damping=10.,
+                                adaptive=True,
+                                model=model,
+                                loss=loss)
+    model.compile(optimizer, loss)
+    train_batch = _get_synthetic_mnist_train_tensors(drop_remainder=True)
+    optimizer.register_train_batch(train_batch)
+    model.train_on_batch(x=train_batch[0], y=train_batch[1])
 
 
 if __name__ == '__main__':

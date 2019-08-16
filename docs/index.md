@@ -90,7 +90,7 @@ automatically.
 
 *   [Home](https://github.com/tensorflow/kfac/tree/master/docs/index.md)
 *   User Guide
-    *   [Keras](https://github.com/tensorflow/kfac/tree/master/python/keras/README.md)
+    *   [Keras](https://github.com/tensorflow/kfac/tree/master/kfac/python/keras/README.md)
     *   [Convolutional](https://github.com/tensorflow/kfac/tree/master/docs/examples/convolutional.md)
     *   [Auto damping](https://github.com/tensorflow/kfac/tree/master/docs/examples/auto_damp.md)
     *   [Distributed Training](https://github.com/tensorflow/kfac/tree/master/docs/examples/distributed_training.md)

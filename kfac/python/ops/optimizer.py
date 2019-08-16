@@ -90,6 +90,11 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       TensorFlow's Optimizer API it can't be used naively as a "drop in
       replacement" for basic classes like MomentumOptimizer.  Using it
       properly with SyncReplicasOptimizer, for example, requires special care.
+      When using it with Distribution Strategy, unlike common practice, K-FAC
+      expects an unscaled loss tensor (i.e. not scaled by
+      1.0 / global_batch_size like you may see in TF Distribution Strategy
+      tutorials). Regardles of whether you are using estimator, strategy, or
+      a normal custom training loop, you should pass in the same loss.
 
       See the various examples in the "examples" directory for a guide about
       how to use K-FAC in various contexts and various systems, like
@@ -205,10 +210,15 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           will be used to evaluate loss by calling `loss_fn(prev_train_batch)`
           when damping adaptation is used. (Default: None)
       loss: `Tensor` the model loss, used as the pre-update loss in adaptive
-        damping. Also used for the built-in log printing. (Default: None)
-      loss_fn: `function` that takes as input training data tensor and returns
-          a scalar loss. Only needed if using damping adaptation.
+          damping. Also used for the built-in log printing. When using
+          Distribution Strategy, unlike common Distribution Strategy practice,
+          this loss tensor should NOT be scaled by 1.0 / global_batch_size.
           (Default: None)
+      loss_fn: `function` that takes as input training data tensor and returns
+          a scalar loss. Only needed if using damping adaptation. When using
+          Distribution Strategy, unlike common Distribution Strategy practice,
+          this loss function's output should NOT be scaled by
+          1.0 / global_batch_size. (Default: None)
       min_damping: `float`, Minimum value the damping parameter
           can take. This should be at least as big as the L2 regularization
           coefficient. (Default: 1e-8)
@@ -499,6 +509,16 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       raise ValueError("var_list doesn't match with set of Fisher-estimating "
                        "variables (i.e. those that were registered).")
 
+  @staticmethod
+  def _scale_loss(loss_value):
+    # tf.train.Optimizer uses this method to account for the Estimator +
+    # Distribution Strategy (DS) case. DS wants a scaled loss and to aggregate
+    # gradients via a sum. Estimator provides an unscaled loss by default. So,
+    # this method would divide the loss by num_replicas. For our optimizer, we
+    # require users to pass in an unscaled loss, so we do not want this method
+    # to alter Estimator's input when it's used with DS.
+    return loss_value
+
   def minimize(self,
                loss,
                global_step=None,
@@ -511,6 +531,12 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                **kwargs):
     # This method has the same general arguments as the minimize methods in
     # standard optimizers do.
+    # With most optimizers used with Distribution Strategy (DS), the user is
+    # expected to scale their loss by 1.0 / global_batch_size, then DS
+    # aggregates the gradients via a sum. We expect users to pass in a loss that
+    # is NOT scaled. This is so we can handle the Estimator and DS cases in a
+    # consistent way. As a side effet, this means each replica must have the
+    # same per-replica batch size.
 
     if var_list is None:
       var_list = self.registered_variables
@@ -671,6 +697,18 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
       if self._use_weight_decay:
         raw_updates_and_vars = self._add_weight_decay(raw_updates_and_vars)
+
+      if tf.distribute.has_strategy():
+        # Distribution Strategy (DS) expects users to pass in loss /
+        # global_batch_size to minimize. We require users not to do this, so our
+        # code can consistently deal with input in the single device, Estimator,
+        # and DS cases. However, the _distributed_apply call in
+        # super(...).apply_gradients(...) will perform a sum over replicas to
+        # aggregate the gradients. Therefore, we divide by the number of
+        # replicas so the gradient applied to the variables is correct.
+        num_replicas = tf.distribute.get_strategy().num_replicas_in_sync
+        raw_updates_and_vars = [(update/num_replicas, var)
+                                for update, var in raw_updates_and_vars]
 
       # Update trainable variables with this step, applying self._learning_rate.
       apply_op = super(KfacOptimizer, self).apply_gradients(

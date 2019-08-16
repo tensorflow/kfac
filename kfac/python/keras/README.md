@@ -78,7 +78,14 @@ of using LayerCollection are [here][layercollection].
     modified when using adaptive damping, and momentum/learning_rate cannot be
     modified when using qmodel momentum. Also, if any of the hyperparameters are
     `None` during instantiation, they will not be modifiable during training.
-3.  This optimizer is fully compatible with tf.keras.models.save_model or
+3.  This optimizer is tested with TPUStrategy and MirroredStrategy. However,
+    you may not use a Strategy with model.fit for two reasons. First, we expect
+    an unscaled loss (i.e. it should NOT be scaled by 1.0 / global_batch_size).
+    Second, TPUStrategy will autograph the train step, so your model and
+    optimizer must both be created in the train step for KFAC to work. This is
+    not possible with model.fit. See our [CIFAR10 TPU][cifar10tpu] example for
+    details on how to do this.
+4.  This optimizer is fully compatible with tf.keras.models.save_model or
     model.save(). To load the compiled model with the optimizer, you must use
     our saving_utils.load_model method, which is identical to
     tf.keras.models.load_model except it registers the model with the optimizer
@@ -102,3 +109,47 @@ of using LayerCollection are [here][layercollection].
     loaded_model = kfac.keras.saving_utils.load_model('saved_model.hdf5')
     loaded_model.fit(...)
     ```
+
+## EXPERIMENTAL - How can I use the adaptive damping/momentum/learning rate?
+
+The original [KFAC paper][paper] outlines how the optimizer can automatically
+adjust the learning rate, momentum, and damping. You can use it as follows:
+
+```python
+import tensorflow as tf
+from tensorflow_kfac.keras import kfac_optimizer
+
+# tf.data.Dataset dataset
+dataset = ...
+dataset = dataset.shuffle(...).repeat().batch(..., drop_remainder=True)
+train_batch = train_batch.get_one_shot_iterator().get_next() # (x, y) tensors
+
+model = tf.keras.Model(...)
+loss = 'sparse_categorical_crossentropy'
+
+# Construct Optimizer
+optimizer = kfac.keras.optimizers..Kfac(damping=10.0,
+                                        adaptive=True,
+                                        model=model,
+                                        loss=loss,
+                                        train_batch=train_batch,
+                                        ...)
+
+# Compile and Fit Model
+model.compile(optimizer=optimizer, loss=loss, ...)
+model.fit(train_batch, ...)
+```
+
+If your batch size is not fixed at the start of training (i.e. it has an ?
+dimension, such as when `drop_remainder=False`), you must pass the `batch_size`
+in the constructor. If you do not use `optimizer.minimize(...)`, you must
+pass in the `loss_tensor`. If you use a custom loss function, you must pass in
+the `loss_fn` in the constructor. Look at the documentation for the
+TensorFlow KFAC optimizer for details on how to customize this more.
+
+Note that this feature is experimental, so it is not recommended for standard
+use cases. It works best when used with a high initial damping (10.0-100.0), and
+with a large batch size. The [autoencoder example][ae_eg] shows using the
+adaptive damping and qmodel momentum successfully.
+
+[ae_eg]: https://github.com/tensorflow/kfac/blob/master/kfac/examples/autoencoder_mnist.py

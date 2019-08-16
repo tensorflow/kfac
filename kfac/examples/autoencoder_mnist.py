@@ -260,6 +260,43 @@ class AutoEncoder(snt.AbstractModule):
     return output
 
 
+def get_keras_autoencoder(**input_kwargs):
+  """Returns autoencoder made with Keras.
+
+  Args:
+    **input_kwargs: Arguments to pass to tf.keras.layers.Input. You must include
+      either the 'shape' or 'tensor' kwarg.
+
+  Returns:
+    A tf.keras.Model, the Autoencoder.
+  """
+  layers = tf.keras.layers
+  regularizers = tf.keras.regularizers
+
+  dense_kwargs = {
+      'kernel_initializer': tf.glorot_uniform_initializer(),
+      'bias_initializer': tf.zeros_initializer(),
+      'kernel_regularizer': regularizers.l2(l=FLAGS.l2_reg),
+      'bias_regularizer': regularizers.l2(l=FLAGS.l2_reg),
+  }
+
+  model = tf.keras.Sequential()
+
+  # Create Encoder
+  model.add(layers.Input(**input_kwargs))
+  for size in _ENCODER_SIZES[:-1]:
+    model.add(layers.Dense(
+        size, activation=_NONLINEARITY, **dense_kwargs))
+  model.add(layers.Dense(_ENCODER_SIZES[-1], **dense_kwargs))
+
+  # Create Decoder
+  for size in _DECODER_SIZES:
+    model.add(layers.Dense(size, activation=_NONLINEARITY, **dense_kwargs))
+  model.add(layers.Dense(784, **dense_kwargs))
+
+  return model
+
+
 def compute_squared_error(logits, targets):
   """Compute mean squared error."""
   return tf.reduce_sum(

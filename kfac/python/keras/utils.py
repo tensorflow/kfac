@@ -485,12 +485,9 @@ def get_loss_fn(
       else:
         total_loss = reduce_fn(loss(y_pred=prediction, y_true=y))
 
-      # Adds regularization penalties (unconditional losses) and input
-      # dependent loss terms. The default supported Keras layers do not have
-      # input dependent losses, but custom layers may have them.
-      custom_losses = model.get_losses_for(None) + model.get_losses_for(x)
-      if custom_losses:
-        total_loss += tf.add_n(custom_losses)
+      # Adds regularization penalties and other custom layer specific losses.
+      if model.losses:
+        total_loss += tf.add_n(model.losses)
 
     return total_loss
 
