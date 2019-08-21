@@ -129,12 +129,12 @@ class Kfac(tf.keras.optimizers.Optimizer):
     may not use numpy arrays as input when using the adaptive mode. If you do
     not use minimize, you must also provide the loss_tensor.
 
-    When using Distribution Strategy, K-FAC expects an unscaled loss tensor
-    (i.e. not scaled by 1.0 / global_batch_size), unlike what is commonly
-    recommended. This means you cannot use K-FAC with a Distribution Strategy
-    and model.fit at the same time, since model.fit does this scaling for you.
-    Instead, use a custom training loop with Distribution Strategy (there are
-    examples in the Github repo).
+    When using Distribution Strategy, K-FAC expects a loss tensor that is
+    normalized only by the per-replica batch size, and not the total batch size,
+    unlike what is commonly recommended. This means you cannot use K-FAC with
+    a Distribution Strategy and model.fit at the same time, since model.fit
+    does this scaling for you. Instead, use a custom training loop with
+    Distribution Strategy (there are examples in the Github repo).
 
     Args:
       _sentinel: Used to prevent positional parameters. Internal, do not use.

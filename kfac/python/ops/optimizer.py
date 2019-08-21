@@ -91,10 +91,11 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       replacement" for basic classes like MomentumOptimizer.  Using it
       properly with SyncReplicasOptimizer, for example, requires special care.
       When using it with Distribution Strategy, unlike common practice, K-FAC
-      expects an unscaled loss tensor (i.e. not scaled by
-      1.0 / global_batch_size like you may see in TF Distribution Strategy
-      tutorials). Regardles of whether you are using estimator, strategy, or
-      a normal custom training loop, you should pass in the same loss.
+      expects a loss tensor that is normalized by the per-replica batch size,
+      and *not* by the total batch size (like you may see in TF Distribution
+      Strategy tutorials). Regardless of whether you are using estimator,
+      strategy, or a normal custom training loop, you should pass in the same
+      loss.
 
       See the various examples in the "examples" directory for a guide about
       how to use K-FAC in various contexts and various systems, like
@@ -212,13 +213,13 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
       loss: `Tensor` the model loss, used as the pre-update loss in adaptive
           damping. Also used for the built-in log printing. When using
           Distribution Strategy, unlike common Distribution Strategy practice,
-          this loss tensor should NOT be scaled by 1.0 / global_batch_size.
-          (Default: None)
+          this loss tensor should by normalized by the per-replica batch size
+          and NOT the total batch size. (Default: None)
       loss_fn: `function` that takes as input training data tensor and returns
           a scalar loss. Only needed if using damping adaptation. When using
           Distribution Strategy, unlike common Distribution Strategy practice,
-          this loss function's output should NOT be scaled by
-          1.0 / global_batch_size. (Default: None)
+          the loss should by normalized by the per-replica batch size and NOT
+          the total batch size. (Default: None)
       min_damping: `float`, Minimum value the damping parameter
           can take. This should be at least as big as the L2 regularization
           coefficient. (Default: 1e-8)
@@ -534,9 +535,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     # With most optimizers used with Distribution Strategy (DS), the user is
     # expected to scale their loss by 1.0 / global_batch_size, then DS
     # aggregates the gradients via a sum. We expect users to pass in a loss that
-    # is NOT scaled. This is so we can handle the Estimator and DS cases in a
-    # consistent way. As a side effet, this means each replica must have the
-    # same per-replica batch size.
+    # is normalized by the per-replica batch size only. This is so we can
+    # handle the Estimator and DS cases in a consistent way. As a side effect,
+    # this means each replica must have the same per-replica batch size.
 
     if var_list is None:
       var_list = self.registered_variables
@@ -705,7 +706,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         # and DS cases. However, the _distributed_apply call in
         # super(...).apply_gradients(...) will perform a sum over replicas to
         # aggregate the gradients. Therefore, we divide by the number of
-        # replicas so the gradient applied to the variables is correct.
+        # replicas so that the scaling of the update applied to the variables
+        # is correct.
         num_replicas = tf.distribute.get_strategy().num_replicas_in_sync
         raw_updates_and_vars = [(update/num_replicas, var)
                                 for update, var in raw_updates_and_vars]

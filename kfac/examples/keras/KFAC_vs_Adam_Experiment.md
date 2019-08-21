@@ -46,9 +46,9 @@ represents the bootstrapped standard deviation. KFAC reaches 89% validation
 accuracy at step 4640 and Adam at step 6560 (measurements were taken every 40
 steps).
 
-![](/plots/kfac_v_adam_loss_curve.png)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_v_adam_loss_curve.png)
 
-![](/plots/kfac_v_adam_accuracy_curve.png)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_v_adam_accuracy_curve.png)
 
 Among the other runs, KFAC decreases training loss quicker than Adam early in
 training, then show similar performance later in training.
@@ -59,7 +59,7 @@ We offer some analysis of the learning rate and damping for KFAC to aid in
 choosing appropriate values for these hyperparameters. Plots with the rest of
 the hyperparameters for both KFAC and Adam are in the plots folder.
 
-![](/plots/kfac_lr_v_damping.png)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_lr_v_damping.png)
 
 In general, a higher learning rate requires a higher damping. A large learning
 rate with low damping leads to divergence, whereas a low learning rate with high
@@ -67,16 +67,16 @@ damping leads to SGD-like behaviour, which is suboptimal. The plot above shows
 little correlation due to the decay schedules playing a large role, which is
 shown below:
 
-![](/plots/kfac_damping_v_dampingdecaypng)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_damping_v_dampingdecay.png)
 
 A fast damping decay allows for faster training, but can easily lead to
 divergence. The best runs are often close to diverging.
 
-![](/plots/kfac_lr_v_lrdecaypng)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_lr_v_lrdecay.png)
 
 As expected, a high learning rate with a low decay can lead to divergence.
 
-![](/plots/kfac_lrdecay_v_dampingdecaypng)
+![](https://github.com/tensorflow/kfac/tree/master/kfac/examples/keras/plots/kfac_lrdecay_v_dampingdecay.png)
 
 Just like with the learning rate and damping, the learning rate decay should
 be proportional the damping decay to prevent divergence while training quickly.
