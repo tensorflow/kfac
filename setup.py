@@ -32,7 +32,7 @@ setup(
     install_requires=[
         'numpy',
         'six',
-        'tensorflow-probability',
+        'tensorflow-probability==0.8',
     ],
     extras_require={
         'tensorflow': ['tensorflow>=1.14'],
