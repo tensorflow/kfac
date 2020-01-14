@@ -25,5 +25,6 @@ Contributors (past and present):
 *   Rishabh Kabra (rkabra@google.com)
 *   Roger Grosse (rgrosse@google.com)
 *   Soham De (sohamde@google.com)
+*   Tamas Berghammer (tberghammer@google.com)
 *   Vikram Tankasali (tvikram@google.com)
 *   Zachary Nado (znado@google.com)

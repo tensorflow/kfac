@@ -171,6 +171,12 @@ class LossFunction(object):
     """Static version of ggn_factor_inner_shape."""
     pass
 
+  @property
+  def dtype(self):
+    if isinstance(self.inputs, (list, tuple)):
+      return self.inputs[0].dtype
+    return self.inputs.dtype
+
 
 @six.add_metaclass(abc.ABCMeta)
 class NegativeLogProbLoss(LossFunction):
@@ -589,7 +595,7 @@ class CategoricalLogitsNegativeLogProbLoss(DistributionNegativeLogProbLoss,
 
   @property
   def _probs(self):
-    return self.dist.probs
+    return self.dist.probs_parameter()
 
   @property
   def _sqrt_probs(self):
@@ -664,7 +670,7 @@ class MultiBernoulliNegativeLogProbLoss(DistributionNegativeLogProbLoss,
 
   @property
   def _probs(self):
-    return self.dist.probs
+    return self.dist.probs_parameter()
 
   @property
   def params(self):

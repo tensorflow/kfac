@@ -14,8 +14,9 @@
 # ==============================================================================
 """Full implementation of deep autoencoder experiment from original K-FAC paper.
 
-This script demonstrates training using KFAC optimizer and updating the
-damping parameter according to the Levenberg-Marquardt rule.
+This script demonstrates training using KFAC optimizer, updating the damping
+parameter according to the Levenberg-Marquardt rule, and using the quadratic
+model method for adapting the learning rate and momentum parameters.
 """
 
 from __future__ import absolute_import
@@ -118,6 +119,20 @@ flags.DEFINE_string('optimizer', 'kfac',
                     'used the various K-FAC hyperparameter map roughly on to '
                     'their Adam equivalents.')
 
+flags.DEFINE_boolean('auto_register_layers', True,
+                     'If True we use the automatic registration feature '
+                     'which relies on scanning the TF graph. Otherwise '
+                     'registration is done manually by this script during '
+                     'the construction of the model.')
+
+flags.DEFINE_boolean('use_keras_model', False,
+                     'If True, we use a Keras version of the autoencoder '
+                     'model.')
+
+flags.DEFINE_boolean('use_sequential_for_keras', True,
+                     'If True, we construct the Keras model using the '
+                     'Sequential class.')
+
 
 FLAGS = flags.FLAGS
 
@@ -193,20 +208,23 @@ def make_train_op(minibatch,
         batch_size=batch_size,
         num_burnin_steps=FLAGS.num_burnin_steps,
         adapt_damping=FLAGS.adapt_damping,
+        l2_reg=FLAGS.l2_reg,
+        placement_strategy=placement_strategy,
+        print_logs=print_logs,
+        tf_replicator=tf_replicator,
         # Note that many of the arguments below don't do anything when
         # adapt_damping=False.
         update_damping_immediately=FLAGS.update_damping_immediately,
         is_chief=True,
-        prev_train_batch=prev_train_batch,
+        prev_train_batch=prev_train_batch,  # We don't actually need this unless
+                                            # update_damping_immediately is
+                                            # False.
         loss=batch_loss,
         loss_fn=loss_fn,
         damping_adaptation_decay=0.95,
         damping_adaptation_interval=FLAGS.damping_adaptation_interval,
-        min_damping=FLAGS.l2_reg,
+        min_damping=1e-6,
         train_batch=minibatch,
-        placement_strategy=placement_strategy,
-        print_logs=print_logs,
-        tf_replicator=tf_replicator,
         )
 
   elif FLAGS.optimizer == 'adam':
@@ -228,7 +246,7 @@ class AutoEncoder(snt.AbstractModule):
                initializers=None,
                custom_getter=None,
                name='AutoEncoder'):
-    super(AutoEncoder, self).__init__(name=name)
+    super(AutoEncoder, self).__init__(custom_getter=custom_getter, name=name)
 
     if initializers is None:
       initializers = {'w': tf.glorot_uniform_initializer(),
@@ -260,6 +278,94 @@ class AutoEncoder(snt.AbstractModule):
     return output
 
 
+class MLPManualReg(snt.AbstractModule):
+
+  def __init__(self,
+               output_sizes,
+               regularizers=None,
+               initializers=None,
+               custom_getter=None,
+               activation=_NONLINEARITY,
+               activate_final=False,
+               name='MLP'):
+
+    super(MLPManualReg, self).__init__(custom_getter=custom_getter, name=name)
+
+    self._output_sizes = output_sizes
+    self._activation = activation
+    self._activate_final = activate_final
+
+    with self._enter_variable_scope():
+      self._layers = [snt.Linear(self._output_sizes[i],
+                                 name='linear_{}'.format(i),
+                                 initializers=initializers,
+                                 regularizers=regularizers,
+                                 custom_getter=custom_getter,
+                                 use_bias=True)
+                      for i in range(len(self._output_sizes))]
+
+  def _build(self, inputs, layer_collection=None):
+    net = inputs
+    for i in range(len(self._output_sizes)):
+      layer_inputs = net
+      net = self._layers[i](net)
+      layer_outputs = net
+      params = (self._layers[i].w, self._layers[i].b)
+
+      if layer_collection is not None:
+        layer_collection.register_fully_connected(params,
+                                                  layer_inputs,
+                                                  layer_outputs,
+                                                  reuse=False)
+
+      if i < len(self._output_sizes) - 1 or self._activate_final:
+        net = self._activation(net)
+
+    return net
+
+
+class AutoEncoderManualReg(snt.AbstractModule):
+  """Simple autoencoder module."""
+
+  def __init__(self,
+               input_size,
+               regularizers=None,
+               initializers=None,
+               custom_getter=None,
+               name='AutoEncoder'):
+    super(AutoEncoderManualReg, self).__init__(custom_getter=custom_getter,
+                                               name=name)
+
+    if initializers is None:
+      initializers = {'w': tf.glorot_uniform_initializer(),
+                      'b': tf.zeros_initializer()}
+    if regularizers is None:
+      regularizers = {'w': lambda w: FLAGS.l2_reg*tf.nn.l2_loss(w),
+                      'b': lambda w: FLAGS.l2_reg*tf.nn.l2_loss(w),}
+
+    with self._enter_variable_scope():
+      self._encoder = MLPManualReg(
+          output_sizes=_ENCODER_SIZES,
+          regularizers=regularizers,
+          initializers=initializers,
+          custom_getter=custom_getter,
+          activation=_NONLINEARITY,
+          activate_final=False)
+      self._decoder = MLPManualReg(
+          output_sizes=_DECODER_SIZES + [input_size],
+          regularizers=regularizers,
+          initializers=initializers,
+          custom_getter=custom_getter,
+          activation=_NONLINEARITY,
+          activate_final=False)
+
+  def _build(self, inputs, layer_collection=None):
+    code = self._encoder(inputs, layer_collection=layer_collection)
+    output = self._decoder(code, layer_collection=layer_collection)
+
+    return output
+
+
 def get_keras_autoencoder(**input_kwargs):
   """Returns autoencoder made with Keras.
 
@@ -280,19 +386,36 @@ def get_keras_autoencoder(**input_kwargs):
       'bias_regularizer': regularizers.l2(l=FLAGS.l2_reg),
   }
 
-  model = tf.keras.Sequential()
+  if FLAGS.use_sequential_for_keras:
+    model = tf.keras.Sequential()
+    # Create Encoder
+    model.add(layers.Input(**input_kwargs))
+    for size in _ENCODER_SIZES[:-1]:
+      model.add(layers.Dense(
+          size, activation=_NONLINEARITY, **dense_kwargs))
+    model.add(layers.Dense(_ENCODER_SIZES[-1], **dense_kwargs))
 
-  # Create Encoder
-  model.add(layers.Input(**input_kwargs))
-  for size in _ENCODER_SIZES[:-1]:
-    model.add(layers.Dense(
-        size, activation=_NONLINEARITY, **dense_kwargs))
-  model.add(layers.Dense(_ENCODER_SIZES[-1], **dense_kwargs))
+    # Create Decoder
+    for size in _DECODER_SIZES:
+      model.add(layers.Dense(size, activation=_NONLINEARITY, **dense_kwargs))
+    model.add(layers.Dense(784, **dense_kwargs))
 
-  # Create Decoder
-  for size in _DECODER_SIZES:
-    model.add(layers.Dense(size, activation=_NONLINEARITY, **dense_kwargs))
-  model.add(layers.Dense(784, **dense_kwargs))
+  else:
+    # Make sure you always wrap the input in keras
+    inputs = layers.Input(**input_kwargs)
+
+    x = inputs
+    # Create Encoder
+    for size in _ENCODER_SIZES[:-1]:
+      x = layers.Dense(size, activation=_NONLINEARITY, **dense_kwargs)(x)
+    x = layers.Dense(_ENCODER_SIZES[-1], **dense_kwargs)(x)
+
+    # Create Decoder
+    for size in _DECODER_SIZES:
+      x = layers.Dense(size, activation=_NONLINEARITY, **dense_kwargs)(x)
+    x = layers.Dense(784, **dense_kwargs)(x)
+
+    model = tf.keras.Model(inputs=inputs, outputs=x)
 
   return model
 
@@ -306,10 +429,14 @@ def compute_squared_error(logits, targets):
 def compute_loss(logits=None,
                  labels=None,
                  layer_collection=None,
-                 return_error=False):
+                 return_error=False,
+                 model=None):
   """Compute loss value."""
-  graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-  total_regularization_loss = tf.reduce_sum(graph_regularizers)
+  if FLAGS.use_keras_model:
+    total_regularization_loss = tf.add_n(model.losses)
+  else:
+    graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+    total_regularization_loss = tf.add_n(graph_regularizers)
 
   loss_matrix = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,
                                                         labels=labels)
@@ -320,7 +447,6 @@ def compute_loss(logits=None,
     # Make sure never to confuse this with register_softmax_cross_entropy_loss!
     layer_collection.register_sigmoid_cross_entropy_loss(logits,
                                                          seed=FLAGS.seed + 1)
-    layer_collection.auto_register_layers()
 
   if return_error:
     squared_error = compute_squared_error(logits, labels)
@@ -389,21 +515,46 @@ def construct_train_quants():
     batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
 
     train_minibatch = cached_reader(batch_size)
-    training_model = AutoEncoder(784)
+
+    if FLAGS.auto_register_layers:
+      if FLAGS.use_keras_model:
+        features, _ = train_minibatch
+        training_model = get_keras_autoencoder(tensor=features)
+      else:
+        training_model = AutoEncoder(784)
+    else:
+      training_model = AutoEncoderManualReg(784)
+
     layer_collection = kfac.LayerCollection()
 
     def loss_fn(minibatch, layer_collection=None, return_error=False):
       features, labels = minibatch
       del labels
-      logits = training_model(features)
+      if FLAGS.auto_register_layers:
+        logits = training_model(features)
+      else:
+        logits = training_model(features, layer_collection=layer_collection)
+
       return compute_loss(
           logits=logits,
           labels=features,
           layer_collection=layer_collection,
-          return_error=return_error)
+          return_error=return_error,
+          model=training_model)
 
-    (batch_loss, batch_error) = loss_fn(
-        train_minibatch, layer_collection=layer_collection, return_error=True)
+    if FLAGS.use_keras_model:
+      (batch_loss, batch_error) = compute_loss(
+          logits=training_model.output,
+          labels=features,
+          layer_collection=layer_collection,
+          return_error=True,
+          model=training_model)
+    else:
+      (batch_loss, batch_error) = loss_fn(
+          train_minibatch, layer_collection=layer_collection, return_error=True)
+
+    if FLAGS.auto_register_layers:
+      layer_collection.auto_register_layers()
 
     # Make training op
     train_op, opt = make_train_op(

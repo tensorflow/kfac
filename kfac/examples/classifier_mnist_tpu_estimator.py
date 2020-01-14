@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Implementation of Deep AutoEncoder from Martens & Grosse (2015).
+"""A simple MNIST classifier example.
 
 This script demonstrates training on TPUs with TPU Estimator using the KFAC
 optimizer, updating the damping parameter according to the
 Levenberg-Marquardt rule, and using the quadratic model method for adapting
 the learning rate and momentum parameters.
 
-See third_party/tensorflow_kfac/google/examples/ae_tpu_xm_launcher.py
+See third_party/tensorflow_kfac/google/examples/classifier_tpu_xm_launcher.py
 for an example Borg launch script.  If you can't access this launch script,
 some important things to know about running K-FAC on TPUs (at least for this
 example) are that you must use higher-precision matrix multiplications.
@@ -35,7 +35,7 @@ import kfac
 import tensorflow as tf
 from tensorflow.contrib import tpu as contrib_tpu
 
-from kfac.examples import autoencoder_mnist
+from kfac.examples import classifier_mnist
 from kfac.examples import mnist
 
 
@@ -49,9 +49,6 @@ flags.DEFINE_string('model_dir', '', 'Model dir.')
 flags.DEFINE_string('master', None,
                     'GRPC URL of the master '
                     '(e.g. grpc://ip.address.of.tpu:8470).')
-
-flags.DEFINE_boolean('use_control_flow_v2', False, 'If True, we use Control '
-                     'Flow V2. Defaults to False.')
 
 
 FLAGS = flags.FLAGS
@@ -84,7 +81,7 @@ def make_train_op(minibatch,
   # Do not use CrossShardOptimizer with K-FAC. K-FAC now handles its own
   # cross-replica syncronization automatically!
 
-  return autoencoder_mnist.make_train_op(
+  return classifier_mnist.make_train_op(
       minibatch=minibatch,
       batch_size=minibatch[0].get_shape().as_list()[0],
       batch_loss=batch_loss,
@@ -93,23 +90,6 @@ def make_train_op(minibatch,
       prev_train_batch=None,
       placement_strategy='replica_round_robin',
       )
-
-
-def compute_squared_error(logits, targets):
-  """Compute mean squared error."""
-  return tf.reduce_sum(
-      tf.reduce_mean(tf.square(targets - tf.nn.sigmoid(logits)), axis=0))
-
-
-def compute_loss(logits, labels):
-  """Compute loss value."""
-  graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-  total_regularization_loss = tf.reduce_sum(graph_regularizers)
-  loss_matrix = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,
-                                                        labels=labels)
-  loss = tf.reduce_sum(tf.reduce_mean(loss_matrix, axis=0))
-  regularized_loss = loss + total_regularization_loss
-  return regularized_loss
 
 
 def mnist_input_fn(params):
@@ -140,48 +120,44 @@ def print_tensors(**tensors):
 def _model_fn(features, labels, mode, params):
   """Estimator model_fn for an autoencoder with adaptive damping."""
   del params
+
+  training_model = classifier_mnist.Model()
   layer_collection = kfac.LayerCollection()
-  training_model_fn = autoencoder_mnist.AutoEncoder(784)
 
-  def loss_fn(minibatch, logits=None):
-    """Compute the model loss given a batch of inputs.
+  def loss_fn(minibatch,
+              logits=None,
+              layer_collection=None,
+              return_error=False):
 
-    Args:
-      minibatch: `Tuple[Tensor, Tensor]` for the current batch of input images
-        and labels.
-      logits: `Tensor` for the current batch of logits. If None then reuses the
-        AutoEncoder to compute them.
-
-    Returns:
-      `Tensor` for the batch loss.
-    """
     features, labels = minibatch
-    del labels
     if logits is None:
       # Note we do not need to do anything like
       # `with tf.variable_scope(tf.get_variable_scope(), reuse=tf.AUTO_REUSE):`
       # here because Sonnet takes care of variable reuse for us as long as we
-      # call the same `training_model_fn` module.  Otherwise we would need to
+      # call the same `training_model` module.  Otherwise we would need to
       # use variable reusing here.
-      logits = training_model_fn(features)
-    batch_loss = compute_loss(logits=logits, labels=features)
-    return batch_loss
+      logits = training_model(features)
 
-  logits = training_model_fn(features)
-  pre_update_batch_loss = loss_fn((features, labels), logits=logits)
-  pre_update_batch_error = compute_squared_error(logits, features)
+    return classifier_mnist.compute_loss(logits=logits,
+                                         labels=labels,
+                                         layer_collection=layer_collection,
+                                         return_error=return_error)
 
-  # Make sure never to confuse this with register_softmax_cross_entropy_loss!
-  layer_collection.register_sigmoid_cross_entropy_loss(logits,
-                                                       seed=FLAGS.seed + 1)
-  layer_collection.auto_register_layers()
+  pre_update_batch_loss, pre_update_batch_error = loss_fn(
+      (features, labels),
+      layer_collection=layer_collection,
+      return_error=True)
 
   global_step = tf.train.get_or_create_global_step()
+
+  layer_collection.auto_register_layers()
+
   train_op, kfac_optimizer = make_train_op(
       (features, labels),
       pre_update_batch_loss,
       layer_collection,
       loss_fn)
+
   tensors_to_print = {
       'learning_rate': tf.expand_dims(kfac_optimizer.learning_rate, 0),
       'momentum': tf.expand_dims(kfac_optimizer.momentum, 0),
@@ -190,10 +166,12 @@ def _model_fn(features, labels, mode, params):
       'loss': tf.expand_dims(pre_update_batch_loss, 0),
       'error': tf.expand_dims(pre_update_batch_error, 0),
   }
+
   if FLAGS.adapt_damping:
     tensors_to_print['qmodel_change'] = tf.expand_dims(
         kfac_optimizer.qmodel_change, 0)
     tensors_to_print['rho'] = tf.expand_dims(kfac_optimizer.rho, 0)
+
   if mode == tf.estimator.ModeKeys.TRAIN:
     return contrib_tpu.TPUEstimatorSpec(
         mode=mode,
@@ -222,17 +200,30 @@ def make_tpu_run_config(master, seed, model_dir, iterations_per_loop,
 
 
 def main(argv):
-
-  if FLAGS.use_control_flow_v2:
-    tf.enable_control_flow_v2()
-
   del argv  # Unused.
+
+  # If using update_damping_immediately resource variables must be enabled.
+  # (Although they probably will be by default on TPUs.)
+  if FLAGS.update_damping_immediately:
+    tf.enable_resource_variables()
+
   tf.set_random_seed(FLAGS.seed)
   # Invert using cholesky decomposition + triangular solve.  This is the only
   # code path for matrix inversion supported on TPU right now.
   kfac.utils.set_global_constants(posdef_inv_method='cholesky')
   kfac.fisher_factors.set_global_constants(
       eigenvalue_decomposition_threshold=10000)
+
+  if not FLAGS.use_sua_approx:
+    if FLAGS.use_custom_patches_op:
+      kfac.fisher_factors.set_global_constants(
+          use_patches_second_moment_op=True
+          )
+    else:
+      # Temporary measure to save memory with giant batches:
+      kfac.fisher_factors.set_global_constants(
+          sub_sample_inputs=True,
+          inputs_to_extract_patches_factor=0.1)
 
   config = make_tpu_run_config(
       FLAGS.master, FLAGS.seed, FLAGS.model_dir, FLAGS.iterations_per_loop,

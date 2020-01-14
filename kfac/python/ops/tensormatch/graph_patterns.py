@@ -18,7 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.python.framework import op_def_registry
+import tensorflow as tf
 
 from kfac.python.ops.tensormatch import tensorflow_graph_util as util
 
@@ -46,8 +46,7 @@ def Placeholder(name=None):
   return ('?', name, util.is_placeholder)
 
 
-_op_names = op_def_registry.get_registered_ops().keys()
-util.import_ops_no_clobber(globals(), _op_names)
+util.import_ops_no_clobber(globals(), dir(tf.raw_ops))
 
 # NOTE(mattjj): renamed in TF 1.0, but not registered as an op in 1.0.1
 Unstack = util.make_op_pattern('Unpack')  # pylint: disable=invalid-name

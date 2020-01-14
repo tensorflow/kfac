@@ -199,7 +199,7 @@ class LayerCollection(object):
     self._linked_parameters = dict(
     )  # dict mapping sets of variables to optionally specified approximations.
     self._graph = graph or tf.get_default_graph()
-    self._loss_dict = {}  # {str: LossFunction}
+    self._loss_dict = OrderedDict()  # {str: LossFunction}
     self._subgraph = None
     self._default_generic_approximation = APPROX_DIAGONAL_NAME
     self._default_fully_connected_approximation = APPROX_KRONECKER_NAME
@@ -355,7 +355,7 @@ class LayerCollection(object):
   def default_scale_and_shift_approximation(self):
     return self._default_scale_and_shift_approximation
 
-  def auto_register_layers(self, var_list=None, **kwargs):
+  def auto_register_layers(self, var_list=None, batch_size=None):
     """Registers remaining unregistered layers automatically using a scanner.
 
     Requires all function / distribution registrations to be performed
@@ -385,12 +385,16 @@ class LayerCollection(object):
         consider. If you have some trainable variables (i.e. those included in
         tf.trainable_variables()) that you don't want included you need to pass
         in this list. (Default: tf.trainable_variables()).
-      **kwargs: Additional arguments to pass to graph_search.register_layers().
-        See that method's docstring for more details.
+      batch_size: A `int` representing the batch size. Needs to specified if
+        registering generic variables that don't match any layer patterns or
+        if time/uses is folded. If the time/uses dimension is merged with
+        batch then this is used to infer number of uses/time-steps. NOTE: In the
+        replicated context this must be the per-replica batch size, and not
+        the total batch size.
     """
     if var_list is None:
       var_list = tf.trainable_variables()
-    graph_search.register_layers(self, var_list, **kwargs)
+    graph_search.register_layers(self, var_list, batch_size=batch_size)
 
   def finalize(self):
     if not self._finalized:
@@ -424,6 +428,14 @@ class LayerCollection(object):
       The `FisherBlock` registered under `layer_key`. If `layer_key` was already
       registered, this will be the previously registered `FisherBlock`.
     """
+    if self._finalized:
+      raise ValueError("You cannot register additional losses or layers after "
+                       "LayerCollection is finalized. Finalization happens "
+                       "after the estimator or optimizer object first uses "
+                       "the data in the LayerCollection. For example, when "
+                       "the minimize() method is called in "
+                       "PeriodicInvCovUpdateKfacOpt.")
+
     if reuse is VARIABLE_SCOPE:
       reuse = tf.get_variable_scope().reuse
 
@@ -496,6 +508,14 @@ class LayerCollection(object):
       KeyError: If reuse == True and no existing LossFunction with 'name' found.
       KeyError: If reuse == False and existing LossFunction with 'name' found.
     """
+
+    if self._finalized:
+      raise ValueError("You cannot register additional losses or layers after "
+                       "LayerCollection is finalized. Finalization happens "
+                       "after the estimator or optimizer object first uses "
+                       "the data in the LayerCollection. For example, when "
+                       "the minimize() method is called in "
+                       "PeriodicInvCovUpdateKfacOpt.")
 
     name = name or self._graph.unique_name(base_name)
 
@@ -575,8 +595,9 @@ class LayerCollection(object):
         error_messages.append("Variable {} not registered.".format(var))
       elif (not math.isinf(reg_uses)) and reg_uses != total_uses:
         error_messages.append(
-            "Variable {} registered with wrong number of uses ({} "
-            "registrations vs {} uses).".format(var, reg_uses, total_uses))
+            "Variable {} registered with wrong number of uses ({} uses "
+            "registered vs {} uses found in sub-graph generated from "
+            "registered losses).".format(var, reg_uses, total_uses))
 
     num_get_vars = len(reg_use_map)
 
@@ -1135,6 +1156,7 @@ class LayerCollection(object):
 
     Args:
       params: Variable or tuple of variables corresponding to the parameters.
+        If using "diagonal" approximation this must be a single variable.
       batch_size: 0-D Tensor. Size of the minibatch (for this tower).
       approx: str or None. It not None, must be one of "full" or "diagonal".
         The Fisher approximation to use. If None the default value is used.
@@ -1148,10 +1170,15 @@ class LayerCollection(object):
       ValueError: For improper value to 'approx'.
       KeyError: If reuse == True but no FisherBlock found for 'params'.
       ValueError: If reuse == True and FisherBlock found but of the wrong type.
+      ValueError: If approx == "diagonal" and params is a tuple.
     """
     block_type, approx = self._get_block_type(
         params, approx, self.default_generic_approximation,
         self._generic_approx_to_block_types)
+
+    if approx == APPROX_DIAGONAL_NAME and isinstance(params, (tuple, list)):
+      raise ValueError("Params must be a Variable if using the diagonal "
+                       "approximation.")
 
     block = self._register_block(params, block_type(self, params), reuse=reuse)
     block.register_additional_tower(batch_size)
@@ -1174,7 +1201,7 @@ class LayerCollection(object):
       params: Variable or 2-tuple of variables corresponding to weight and
         bias of this layer. Weight matrix should have shape [input_size,
         output_size]. Bias should have shape [output_size].
-      inputs: A list of Tensors or a single Tensor, inputs to this layer. If a
+      inputs: A list of Tensors or a single Tensor. Inputs to this layer. If a
         list of Tensors, the list indexes each use in the model (which might
         correspond to a "time-step" in an RNN). Each Tensor in the list has
         leading dimension batch_size. If a single Tensor, the leading dimension
@@ -1227,6 +1254,11 @@ class LayerCollection(object):
         params,
         block_type(self, has_bias=has_bias, num_uses=num_uses),
         reuse=reuse)
+
+    if isinstance(inputs, (tuple, list)):
+      inputs = tuple(inputs)
+    if isinstance(outputs, (tuple, list)):
+      outputs = tuple(outputs)
 
     if not dense_inputs:
       if isinstance(inputs, (tuple, list)):
@@ -1317,6 +1349,11 @@ class LayerCollection(object):
             extract_patches_fn="extract_image_patches",
             num_uses=num_uses),
         reuse=reuse)
+
+    if isinstance(inputs, (tuple, list)):
+      inputs = tuple(inputs)
+    if isinstance(outputs, (tuple, list)):
+      outputs = tuple(outputs)
 
     block.register_additional_tower(inputs, outputs)
     if isinstance(inputs, (tuple, list)):

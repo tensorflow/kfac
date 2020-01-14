@@ -26,9 +26,12 @@ from kfac.python.ops import estimator
 from kfac.python.ops import fisher_blocks
 from kfac.python.ops import fisher_factors
 from kfac.python.ops import layer_collection
+from kfac.python.ops import linear_operator
 from kfac.python.ops import loss_functions
 from kfac.python.ops import op_queue
 from kfac.python.ops import optimizer
+from kfac.python.ops import patches_second_moment
+from kfac.python.ops import placement
 from kfac.python.ops import utils
 from kfac.python.ops.kfac_utils import async_inv_cov_update_kfac_opt
 from kfac.python.ops.kfac_utils import data_reader

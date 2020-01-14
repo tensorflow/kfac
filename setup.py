@@ -19,7 +19,7 @@ from setuptools import setup
 
 setup(
     name='kfac',
-    version='0.2.0',
+    version='0.2.1',
     description='K-FAC for TensorFlow',
     author='Google Inc.',
     author_email='no-reply@google.com',

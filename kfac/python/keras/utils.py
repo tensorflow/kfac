@@ -397,8 +397,12 @@ def get_layer_collection(model,
   return layer_collection
 
 
-def get_loss_fn(
-    model, loss, loss_weights=None, reduce_fn=tf.reduce_mean, name='loss'):
+def get_loss_fn(model,
+                loss,
+                training=None,
+                loss_weights=None,
+                reduce_fn=tf.reduce_mean,
+                name='loss'):
   """Creates a loss function to be used for KFAC's adaptive damping.
 
   This allows Keras KFAC to automatically create the loss function to use
@@ -423,6 +427,10 @@ def get_loss_fn(
       model's output are logits, you should pass a callable Keras with
       from_logits=True. This function could be a non-Keras loss, but it is
       untested in this case.
+    training: Boolean indicating whether or not the loss is used in training or
+      test time. This is necessary to set the proper mode for batch norm and
+      dropout layers. If None then falls back to Keras behavior of calling the
+      model without passing a value for training.
     loss_weights: If you have multiple losses, a list or dictionaryof weights
       for each loss. A default value of 1.0 is given for losses that don't have
       a weight when a dictionary is passed.
@@ -474,7 +482,10 @@ def get_loss_fn(
     with tf.name_scope(name):
       x, y = inputs
       if prediction is None:
-        prediction = model(x, training=False)
+        if training is not None:
+          prediction = model(x, training=training)
+        else:
+          prediction = model(x)
 
       if isinstance(prediction, (tuple, list)):
         reduced_losses = [reduce_fn(fn(y_pred=pred_i, y_true=y_i))

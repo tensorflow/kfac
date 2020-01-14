@@ -26,12 +26,6 @@ from kfac.python.ops import fisher_factors as ff
 from kfac.python.ops import layer_collection as lc
 from kfac.python.ops import optimizer
 
-# We need to set these constants since the numerical values used in the tests
-# were chosen when these used to be the defaults.
-ff.set_global_constants(init_covariances_at_zero=False,
-                        zero_debias=False,
-                        init_inverses_at_zero=False)
-
 
 def dummy_layer_collection():
   lcoll = lc.LayerCollection()
@@ -164,19 +158,18 @@ class OptimizerTest(tf.test.TestCase):
 
       layer_collection.register_fully_connected((weights, bias), inputs, output)
 
-      logits = tf.tanh(output)
-      targets = tf.constant([[0.], [1.]])
-      output = tf.reduce_mean(
-          tf.nn.softmax_cross_entropy_with_logits(
-              logits=logits, labels=targets))
+      preds = output
 
-      layer_collection.register_categorical_predictive_distribution(logits)
+      targets = tf.constant([[0.34], [1.56]])
+      output = tf.reduce_mean(tf.square(targets - preds))
+
+      layer_collection.register_squared_error_loss(preds)
 
       opt = optimizer.KfacOptimizer(
           0.1,
           0.2,
           layer_collection,
-          0.3,
+          cov_ema_decay=0.3,
           momentum=0.5,
           momentum_type='regular')
       (cov_update_thunks,

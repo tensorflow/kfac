@@ -31,6 +31,7 @@ from collections import OrderedDict
 from tensorflow.python.util import nest
 from kfac.python.ops import linear_operator as lo
 from tensorflow.python.training import moving_averages
+from kfac.python.ops import patches_second_moment as psm
 from kfac.python.ops import utils
 
 
@@ -47,9 +48,9 @@ ZERO_DEBIAS = True
 # proper update, and so is preferred.
 INIT_INVERSES_AT_ZERO = True
 
-# When the number of inverses requested from a FisherFactor exceeds this value,
+# When the number of inverses requested from a FisherFactor is >= this value,
 # the inverses are computed using an eigenvalue decomposition.
-EIGENVALUE_DECOMPOSITION_THRESHOLD = 2
+EIGENVALUE_DECOMPOSITION_THRESHOLD = 4
 
 # Numerical eigenvalues computed from covariance matrix estimates are clipped to
 # be at least as large as this value before they are used to compute inverses or
@@ -104,6 +105,14 @@ _MAX_NUM_PATCHES = 10000000
 _MAX_NUM_PATCHES_PER_DIMENSION = 3.0
 
 
+# If true we use the custom XLA implementation of an op to compute the second
+# moment of the patch vectors. Note that _SUB_SAMPLE_PATCHES doesn't do anything
+# when this is enabled. Also note that _SUB_SAMPLE_INPUTS probably doesn't
+# need to be used either, since that feature was designed to mitigate the
+# extreme memory consumption of the naive implementation of this op.
+_USE_PATCHES_SECOND_MOMENT_OP = False
+
+
 # TOWER_STRATEGY can be one of "concat" or "separate".  If "concat", the data
 # passed to the factors from the blocks will be concatenated across towers
 # (lazily via PartitionedTensor objects).  Otherwise a tuple of tensors over
@@ -131,7 +140,8 @@ def set_global_constants(init_covariances_at_zero=None,
                          max_num_patches=None,
                          max_num_patches_per_dimension=None,
                          tower_strategy=None,
-                         get_sanitized_name_fn=None):
+                         get_sanitized_name_fn=None,
+                         use_patches_second_moment_op=None):
   """Sets various global constants used by the classes in this module."""
   global INIT_COVARIANCES_AT_ZERO
   global ZERO_DEBIAS
@@ -148,6 +158,7 @@ def set_global_constants(init_covariances_at_zero=None,
   global _MAX_NUM_PATCHES_PER_DIMENSION
   global _GET_SANITIZED_NAME_FN
   global TOWER_STRATEGY
+  global _USE_PATCHES_SECOND_MOMENT_OP
 
   if init_covariances_at_zero is not None:
     INIT_COVARIANCES_AT_ZERO = init_covariances_at_zero
@@ -177,24 +188,26 @@ def set_global_constants(init_covariances_at_zero=None,
     TOWER_STRATEGY = tower_strategy
   if get_sanitized_name_fn is not None:
     _GET_SANITIZED_NAME_FN = get_sanitized_name_fn
+  if use_patches_second_moment_op is not None:
+    _USE_PATCHES_SECOND_MOMENT_OP = use_patches_second_moment_op
 
 
-def inverse_initializer(shape, dtype, partition_info=None):  # pylint: disable=unused-argument
-  if INIT_INVERSES_AT_ZERO:
-    return tf.zeros(shape, dtype=dtype)
-  return tf.eye(num_rows=shape[0], dtype=dtype)
+if INIT_INVERSES_AT_ZERO:
+  inverse_initializer = tf.zeros_initializer
+else:
+  inverse_initializer = tf.initializers.identity
 
 
-def covariance_initializer(shape, dtype, partition_info=None):  # pylint: disable=unused-argument
-  if INIT_COVARIANCES_AT_ZERO:
-    return tf.zeros(shape, dtype=dtype)
-  return tf.eye(num_rows=shape[0], dtype=dtype)
+if INIT_COVARIANCES_AT_ZERO:
+  covariance_initializer = tf.zeros_initializer
+else:
+  covariance_initializer = tf.initializers.identity
 
 
-def diagonal_covariance_initializer(shape, dtype, partition_info=None):  # pylint: disable=unused-argument
-  if INIT_COVARIANCES_AT_ZERO:
-    return tf.zeros(shape, dtype=dtype)
-  return tf.ones(shape, dtype=dtype)
+if INIT_COVARIANCES_AT_ZERO:
+  diagonal_covariance_initializer = tf.zeros_initializer
+else:
+  diagonal_covariance_initializer = tf.ones_initializer
 
 
 @contextlib.contextmanager
@@ -257,29 +270,6 @@ def append_homog(tensor, homog_value=None):
   else:
     appendage = tf.ones(shape, dtype=tensor.dtype)
   return tf.concat([tensor, appendage], axis=-1)
-
-
-def accumulate_and_maybe_write(acc_var,
-                               var,
-                               tensor,
-                               ema_decay,
-                               weight,
-                               should_write):
-
-  def write():
-    return tf.group(
-        var.add_to_average(acc_var.read_value_and_reset(),
-                           decay=ema_decay,
-                           weight=weight))
-
-  with tf.control_dependencies([acc_var.accumulate(tensor)]):
-    if isinstance(should_write, bool):
-      if should_write:
-        return write()
-      else:
-        return tf.no_op()
-    else:
-      return tf.cond(should_write, write, tf.no_op)
 
 
 def scope_string_from_params(params):
@@ -553,11 +543,6 @@ class FisherFactor(object):
           initializer=self._cov_initializer,
           normalize_value=ZERO_DEBIAS)
 
-      self._acc_cov = utils.AccumulatorVariable(
-          name="acc_cov",
-          shape=self._cov_shape,
-          dtype=self._dtype)
-
   @abc.abstractmethod
   def _compute_new_cov(self, source, tower):
     """Computes minibatch-estimated covariance for a single source.
@@ -585,8 +570,8 @@ class FisherFactor(object):
 
     # Compute average of 'new_cov' across all replicas. On a replica, each
     # instance of 'new_cov' will be based on a different minibatch. This ensures
-    # that by the end of assign_moving_average(), all replicas see the same
-    # value for self._cov.
+    # that by the time variable assignment happens, all replicas have the same
+    # value.
     #
     # Other implementations of make_covariance_update_op() that accumulate
     # statistics in other variables should mimic this behavior.
@@ -599,16 +584,13 @@ class FisherFactor(object):
 
     return new_cov
 
-  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+  def make_covariance_update_op(self, ema_decay, ema_weight):
     """Constructs and returns the covariance update Op.
 
     Args:
       ema_decay: float or Tensor. The exponential moving average decay.
       ema_weight: float or Tensor. The weight to put on the newly computed values.
         This is typically 1.0 - ema_decay.
-      should_write: Python or TF bool.  If True, we write the covariance to
-        the variable and reset the accumulator instead of just accumulating.
-        (Default: True)
 
     Returns:
       The op which updates the cov variable (via acc_cov).
@@ -617,12 +599,8 @@ class FisherFactor(object):
     self._cov_tensor = cov_tensor  # This is used for non-standard applications
                                    # and debugging I think.
 
-    return accumulate_and_maybe_write(self._acc_cov,
-                                      self._cov,
-                                      cov_tensor,
-                                      ema_decay,
-                                      ema_weight,
-                                      should_write)
+    return self._cov.add_to_average(cov_tensor, decay=ema_decay,
+                                    weight=ema_weight)
 
   @abc.abstractmethod
   def _get_data_device(self, tower):
@@ -1085,13 +1063,12 @@ class NaiveDiagonalFactor(DiagonalFactor):
     """Initializes NaiveDiagonalFactor instance.
 
     Args:
-      params_grads: Sequence of Tensors, each with same shape as parameters this
-        FisherFactor corresponds to. For example, the gradient of the loss with
-        respect to parameters.
-      batch_size: int or 0-D Tensor. Size
+      params_grads: List of tensors (or lists), with the first index
+        corresponding to source, and the second optional index corresponding
+        to the element of the parameter list.
+      batch_size: int or 0-D Tensor. The batch size.
     """
-    self._params_grads = tuple(utils.ensure_sequence(params_grad)
-                               for params_grad in params_grads)
+    self._params_grads = params_grads
     self._batch_size = batch_size
     super(NaiveDiagonalFactor, self).__init__()
 
@@ -1102,9 +1079,7 @@ class NaiveDiagonalFactor(DiagonalFactor):
 
   @property
   def _cov_shape(self):
-    size = sum(param_grad.shape.num_elements()
-               for param_grad in self._params_grads[0])
-    return [size, 1]
+    return self._params_grads[0].shape
 
   @property
   def _num_sources(self):
@@ -1116,7 +1091,7 @@ class NaiveDiagonalFactor(DiagonalFactor):
 
   @property
   def _dtype(self):
-    return self._params_grads[0][0].dtype
+    return self._params_grads[0].dtype
 
   def _partial_batch_size(self, source=0, tower=0):
     assert source == 0 and tower == 0
@@ -1124,10 +1099,8 @@ class NaiveDiagonalFactor(DiagonalFactor):
 
   def _compute_new_cov(self, source, tower):
     assert tower == 0
-
-    params_grads_flat = utils.tensors_to_column(self._params_grads[source])
-    return (tf.square(params_grads_flat) / tf.cast(
-        self._batch_size, params_grads_flat.dtype))
+    return (tf.square(self._params_grads[source]) / tf.cast(
+        self._batch_size, self._params_grads[source].dtype))
 
   def _get_data_device(self, tower):
     return None
@@ -1327,7 +1300,7 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
   def _partial_batch_size(self, source=0, tower=0):
     return utils.get_shape(self._outputs_grads[source][tower])[0]
 
-  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+  def make_covariance_update_op(self, ema_decay, ema_weight):
 
     self._squared_inputs = []
     for tower in range(self._num_towers):
@@ -1339,7 +1312,7 @@ class FullyConnectedDiagonalFactor(DiagonalFactor):
         self._squared_inputs.append(tf.square(inputs))
 
     return super(FullyConnectedDiagonalFactor, self).make_covariance_update_op(
-        ema_decay, ema_weight, should_write=should_write)
+        ema_decay, ema_weight)
 
   def _compute_new_cov(self, source, tower):
     batch_size = utils.get_shape(self._squared_inputs[tower])[0]
@@ -1588,7 +1561,7 @@ class ConvDiagonalFactor(DiagonalFactor):
   def _partial_batch_size(self, source=0, tower=0):
     return utils.get_shape(self._outputs_grads[source][tower])[0]
 
-  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+  def make_covariance_update_op(self, ema_decay, ema_weight):
     filter_height, filter_width, _, _ = self._filter_shape
 
     # TODO(b/64144716): there is potential here for a big savings in terms
@@ -1619,7 +1592,7 @@ class ConvDiagonalFactor(DiagonalFactor):
         self._patches.append(patches)
 
     return super(ConvDiagonalFactor, self).make_covariance_update_op(
-        ema_decay, ema_weight, should_write=should_write)
+        ema_decay, ema_weight)
 
   def _compute_new_cov(self, source, tower):
     patches = self._patches[tower]
@@ -1817,68 +1790,107 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
 
     # TODO(b/64144716): there is potential here for a big savings in terms of
     # memory use.
-    if self._extract_patches_fn in [None, "extract_convolution_patches"]:
-      patches = utils.extract_convolution_patches(
-          inputs,
-          self._filter_shape,
-          padding=self._padding,
-          strides=self._strides,
-          dilation_rate=self._dilation_rate,
-          data_format=self._data_format)
+    if _USE_PATCHES_SECOND_MOMENT_OP:
 
-    elif self._extract_patches_fn == "extract_image_patches":
-      assert inputs.shape.ndims == 4
-      assert len(self._filter_shape) == 4
-      assert len(self._strides) == 4, self._strides
-      if self._dilation_rate is None:
-        rates = [1, 1, 1, 1]
-      else:
-        rates = self._dilation_rate
-        assert len(rates) == 4
-        assert rates[0] == rates[-1] == 1
-      patches = tf.extract_image_patches(
+      psm_mat, pfm_vec = psm.patches_second_moment(
           inputs,
-          ksizes=[1] + list(self._filter_shape[0:-2]) + [1],
-          strides=self._strides,
-          rates=rates,
+          self._filter_shape[0:2],
+          stride=self._strides[1:3],
           padding=self._padding)
 
-    elif self._extract_patches_fn == "extract_pointwise_conv2d_patches":
-      assert self._strides in [None, [1, 1, 1, 1], (1, 1, 1, 1)]
-      assert self._filter_shape[0] == self._filter_shape[1] == 1
-      patches = utils.extract_pointwise_conv2d_patches(
-          inputs, self._filter_shape, data_format=None)
+      num_patches = utils.num_conv_locations(inputs.shape.as_list(),
+                                             list(self._filter_shape),
+                                             self._strides, self._padding)
+      batch_size = utils.get_shape(inputs)[0]
+      normalizer = tf.cast(num_patches * batch_size, dtype=psm_mat.dtype)
+      if self._has_bias:
+        # For conv layers with biases we require that an extra vector of ones
+        # to be concatenated to the last dimension of the patches matrix
+        # (output of tf.extract_image_patches) before we
+        # compute the statistics.
+
+        # Note that this produces an output matrix which has one extra row and
+        # column as shown below.
+        # [ psm_mat   pfm_vec ]
+        # [ pfm_vec'  num_patches*batch_size]
+
+        pfm_vec_num_patches = tf.expand_dims(
+            tf.concat(
+                [pfm_vec, tf.expand_dims(normalizer, axis=0)],
+                axis=0),
+            axis=1)
+        psm_mat_pfm_vec = tf.concat(
+            [psm_mat, tf.expand_dims(pfm_vec, axis=0)], axis=0)
+        cov_mat = (1. / normalizer) * tf.concat(
+            [psm_mat_pfm_vec, pfm_vec_num_patches], axis=1)
+        return (cov_mat + tf.transpose(cov_mat)) / tf.cast(2.0, cov_mat.dtype)
+      else:
+        psm_mat = (1. / normalizer) * psm_mat
+        return (psm_mat + tf.transpose(psm_mat)) / tf.cast(2.0, psm_mat.dtype)
 
     else:
-      raise NotImplementedError(self._extract_patches_fn)
+      if self._extract_patches_fn in [None, "extract_convolution_patches"]:
+        patches = utils.extract_convolution_patches(
+            inputs,
+            self._filter_shape,
+            padding=self._padding,
+            strides=self._strides,
+            dilation_rate=self._dilation_rate,
+            data_format=self._data_format)
 
-    if self._patch_mask is not None:
-      assert self._patch_mask.shape == self._filter_shape[0:-1]
-      # This should work as intended due to broadcasting.
-      patches *= tf.reshape(self._patch_mask, [-1])
+      elif self._extract_patches_fn == "extract_image_patches":
+        assert inputs.shape.ndims == 4
+        assert len(self._filter_shape) == 4
+        assert len(self._strides) == 4, self._strides
+        if self._dilation_rate is None:
+          rates = [1, 1, 1, 1]
+        else:
+          rates = self._dilation_rate
+          assert len(rates) == 4
+          assert rates[0] == rates[-1] == 1
+        patches = tf.extract_image_patches(
+            inputs,
+            ksizes=[1] + list(self._filter_shape[0:-2]) + [1],
+            strides=self._strides,
+            rates=rates,
+            padding=self._padding)
 
-    flatten_size = np.prod(self._filter_shape[0:-1])
-    # patches_flat below is the matrix [[A_l]] from the KFC paper (tilde
-    # omitted over A for clarity). It has shape M|T| x J|Delta| (eq. 14),
-    # where M = minibatch size, |T| = number of spatial locations,
-    # |Delta| = number of spatial offsets, and J = number of input maps
-    # for convolutional layer l.
-    patches_flat = tf.reshape(patches, [-1, flatten_size])
-    # We append a homogenous coordinate to patches_flat if the layer has
-    # bias parameters. This gives us [[A_l]]_H from the paper.
-    if self._sub_sample_patches:
-      patches_flat = _subsample_patches(patches_flat)
+      elif self._extract_patches_fn == "extract_pointwise_conv2d_patches":
+        assert self._strides in [None, [1, 1, 1, 1], (1, 1, 1, 1)]
+        assert self._filter_shape[0] == self._filter_shape[1] == 1
+        patches = utils.extract_pointwise_conv2d_patches(
+            inputs, self._filter_shape, data_format=None)
 
-    if self._has_bias:
-      patches_flat = append_homog(patches_flat)
-    # We call compute_cov without passing in a normalizer. compute_cov uses
-    # the first dimension of patches_flat i.e. M|T| as the normalizer by
-    # default. Hence we end up computing 1/M|T| * [[A_l]]^T [[A_l]], with
-    # shape J|Delta| x J|Delta|. This is related to hat{Omega}_l from
-    # the paper but has a different scale here for consistency with
-    # ConvOutputKroneckerFactor.
-    # (Tilde omitted over A for clarity.)
-    return compute_cov(patches_flat)
+      else:
+        raise NotImplementedError(self._extract_patches_fn)
+
+      if self._patch_mask is not None:
+        assert self._patch_mask.shape == self._filter_shape[0:-1]
+        # This should work as intended due to broadcasting.
+        patches *= tf.reshape(self._patch_mask, [-1])
+
+      flatten_size = np.prod(self._filter_shape[0:-1])
+      # patches_flat below is the matrix [[A_l]] from the KFC paper (tilde
+      # omitted over A for clarity). It has shape M|T| x J|Delta| (eq. 14),
+      # where M = minibatch size, |T| = number of spatial locations,
+      # |Delta| = number of spatial offsets, and J = number of input maps
+      # for convolutional layer l.
+      patches_flat = tf.reshape(patches, [-1, flatten_size])
+      # We append a homogenous coordinate to patches_flat if the layer has
+      # bias parameters. This gives us [[A_l]]_H from the paper.
+      if self._sub_sample_patches:
+        patches_flat = _subsample_patches(patches_flat)
+
+      if self._has_bias:
+        patches_flat = append_homog(patches_flat)
+      # We call compute_cov without passing in a normalizer. compute_cov uses
+      # the first dimension of patches_flat i.e. M|T| as the normalizer by
+      # default. Hence we end up computing 1/M|T| * [[A_l]]^T [[A_l]], with
+      # shape J|Delta| x J|Delta|. This is related to hat{Omega}_l from
+      # the paper but has a different scale here for consistency with
+      # ConvOutputKroneckerFactor.
+      # (Tilde omitted over A for clarity.)
+      return compute_cov(patches_flat)
 
   def _get_data_device(self, tower):
     return self._inputs[tower].device
@@ -1900,8 +1912,7 @@ class ConvInputMultiKF(ConvInputKroneckerFactor):
                sub_sample_patches=None,
                patch_mask=None):
 
-    super(ConvInputMultiKF, self).__init__(self,
-                                           inputs,
+    super(ConvInputMultiKF, self).__init__(inputs,
                                            filter_shape,
                                            padding,
                                            strides=strides,
@@ -2032,21 +2043,13 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
             initializer=tf.zeros_initializer(),
             normalize_value=ZERO_DEBIAS)
 
-        self._acc_mu = utils.AccumulatorVariable(
-            name="acc_mu",
-            shape=(self._in_channels, 1),
-            dtype=self._dtype)
-
-  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+  def make_covariance_update_op(self, ema_decay, ema_weight):
     """Constructs and returns the covariance update Op.
 
     Args:
       ema_decay: The exponential moving average decay (float or Tensor).
       ema_weight: float or Tensor. The weight to put on the newly computed
         values. This is typically 1.0 - ema_decay.
-      should_write: Python or TF bool.  If True, we write the covariance to
-        the variable and reset the accumulator instead of just accumulating.
-        (Default: True)
 
     Returns:
       An Op for updating the covariance Variable referenced by _cov and possibly
@@ -2065,24 +2068,16 @@ class ConvInputSUAKroneckerFactor(FisherFactor):
     if not ASSUME_ZERO_MEAN_ACTIVATIONS:
       new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
 
-      acc_mu_op = accumulate_and_maybe_write(self._acc_mu,
-                                             self._mu,
-                                             new_mu,
-                                             ema_decay,
-                                             ema_weight,
-                                             should_write)
+      acc_mu_op = self._mu.add_to_average(new_mu, decay=ema_decay,
+                                          weight=ema_weight)
     else:
       acc_mu_op = tf.no_op()
 
       if SUBTRACT_MEAN_CONTRIB_FROM_COV:
         new_cov = new_cov - tf.matmul(new_mu, new_mu, transpose_b=True)
 
-    acc_cov_op = accumulate_and_maybe_write(self._acc_cov,
-                                            self._cov,
-                                            new_cov,
-                                            ema_decay,
-                                            ema_weight,
-                                            should_write)
+    acc_cov_op = self._cov.add_to_average(new_cov, decay=ema_decay,
+                                          weight=ema_weight)
     return tf.group(acc_cov_op, acc_mu_op)
 
   def _compute_new_cov(self, source, tower):
@@ -2510,10 +2505,10 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     inv_vars.extend(self._option2quants_by_damping.values())
     return inv_vars
 
-  def make_covariance_update_op(self, ema_decay, ema_weight, should_write=True):
+  def make_covariance_update_op(self, ema_decay, ema_weight):
 
     op = super(FullyConnectedMultiKF, self).make_covariance_update_op(
-        ema_decay, ema_weight, should_write=should_write)
+        ema_decay, ema_weight)
 
     if self._cov_dt1 is not None:
       new_cov_dt1_contribs = []
@@ -2528,12 +2523,8 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
       # See comments in FisherFactor.make_covariance_update_op() for details.
       new_cov_dt1 = utils.all_average(new_cov_dt1)
 
-      op2 = accumulate_and_maybe_write(self._acc_cov_dt1,
-                                       self._cov_dt1,
-                                       new_cov_dt1,
-                                       ema_decay,
-                                       ema_weight,
-                                       should_write)
+      op2 = self._cov_dt1.add_to_average(new_cov_dt1, decay=ema_decay,
+                                         weight=ema_weight)
       # TODO(b/69112164):
       # It's important that _cov and _cov_dt1 remain consistent with each
       # other while the inverse ops are happening. How can we ensure this?
@@ -2603,11 +2594,6 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
             dtype=self._dtype,
             initializer=tf.zeros_initializer(),
             normalize_value=ZERO_DEBIAS)
-
-        self._acc_cov_dt1 = utils.AccumulatorVariable(
-            name="acc_cov_dt1",
-            shape=self._cov_shape,
-            dtype=self._dtype)
 
   def register_option1quants(self, damping_func):
     damping_id = self._register_damping(damping_func)

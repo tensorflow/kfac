@@ -91,11 +91,10 @@ class CurvatureMatrixVectorProductComputer(object):
 
   @property
   def _total_loss(self):
-    vals = []
-    for loss in self._losses:
-      with tf.colocate_with(self._loss_colocation_ops[loss]):
-        vals.append(loss.evaluate())
-    return tf.add_n(tuple(vals))
+    return self._layer_collection.total_loss()
+
+  def _get_loss_coeff(self, loss):
+    return self._layer_collection.loss_coeffs[loss]
 
   # Jacobian multiplication functions:
   def _multiply_jacobian(self, vecs):
@@ -120,29 +119,35 @@ class CurvatureMatrixVectorProductComputer(object):
         stop_gradients=self._wrt_tensors,
         colocate_gradients_with_ops=self._colocate_gradients_with_ops)
 
-  # Losses Fisher/GGN multiplication functions:
-  def _multiply_loss_fisher(self, loss_vecs):
-    """Multiply loss_vecs by Fisher of total loss."""
-    return tuple(
-        loss.multiply_fisher(loss_vec)
-        for loss, loss_vec in zip(self._losses, loss_vecs))
-
-  def _multiply_across_losses(self, mult_func, vecs):
+  # Loss Fisher/GGN multiplication functions:
+  def _multiply_across_losses(self, mult_func, vecs, coeff_mode="regular"):
     products = []
     for loss, vec in zip(self._losses, vecs):
       with tf.colocate_with(self._loss_colocation_ops[loss]):
-        products.append(mult_func(loss, vec))
+        if coeff_mode == "regular":
+          multiplier = self._get_loss_coeff(loss)
+        elif coeff_mode == "sqrt":
+          multiplier = tf.sqrt(self._get_loss_coeff(loss))
+        val = mult_func(loss, vec)
+        products.append(tf.cast(multiplier, dtype=val.dtype) * val)
     return tuple(products)
+
+  def _multiply_loss_fisher(self, loss_vecs):
+    """Multiply loss_vecs by Fisher of total loss."""
+    mult_func = lambda loss, vec: loss.multiply_fisher(vec)
+    return self._multiply_across_losses(mult_func, loss_vecs)
 
   def _multiply_loss_fisher_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of Fisher of total loss."""
     mult_func = lambda loss, vec: loss.multiply_fisher_factor(vec)
-    return self._multiply_across_losses(mult_func, loss_inner_vecs)
+    return self._multiply_across_losses(mult_func, loss_inner_vecs,
+                                        coeff_mode="sqrt")
 
   def _multiply_loss_fisher_factor_transpose(self, loss_vecs):
     """Multiply loss_vecs by transpose factor of Fisher of total loss."""
     mult_func = lambda loss, vec: loss.multiply_fisher_factor_transpose(vec)
-    return self._multiply_across_losses(mult_func, loss_vecs)
+    return self._multiply_across_losses(mult_func, loss_vecs,
+                                        coeff_mode="sqrt")
 
   def _multiply_loss_ggn(self, loss_vecs):
     """Multiply loss_vecs by GGN of total loss."""
@@ -152,14 +157,16 @@ class CurvatureMatrixVectorProductComputer(object):
   def _multiply_loss_ggn_factor(self, loss_inner_vecs):
     """Multiply loss_inner_vecs by factor of GGN of total loss."""
     mult_func = lambda loss, vec: loss.multiply_ggn_factor(vec)
-    return self._multiply_across_losses(mult_func, loss_inner_vecs)
+    return self._multiply_across_losses(mult_func, loss_inner_vecs,
+                                        coeff_mode="sqrt")
 
   def _multiply_loss_ggn_factor_transpose(self, loss_vecs):
     """Multiply loss_vecs by transpose factor of GGN of total loss."""
     mult_func = lambda loss, vec: loss.multiply_ggn_factor_transpose(vec)
-    return self._multiply_across_losses(mult_func, loss_vecs)
+    return self._multiply_across_losses(mult_func, loss_vecs,
+                                        coeff_mode="sqrt")
 
-  # Matrix-vector product functions:
+  # Matrix-vector product functions (users should directly call these):
   def multiply_fisher(self, vecs):
     """Multiply vecs by Fisher of total loss."""
     jacobian_vecs = self._multiply_jacobian(vecs)

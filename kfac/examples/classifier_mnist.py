@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Full implementation of deep autoencoder experiment from original K-FAC paper.
+"""A simple MNIST classifier example.
 
-This script demonstrates training using KFAC optimizer and updating the
-damping parameter according to the Levenberg-Marquardt rule.
+This script demonstrates training using KFAC optimizer, updating the damping
+parameter according to the Levenberg-Marquardt rule, and using the quadratic
+model method for adapting the learning rate and momentum parameters.
 """
 
 from __future__ import absolute_import
@@ -35,10 +36,8 @@ from kfac.python.ops.kfac_utils import data_reader_alt
 
 
 # Model parameters
-_ENCODER_SIZES = [1000, 500, 250, 30]
-_DECODER_SIZES = [250, 500, 1000]
-_NONLINEARITY = tf.tanh  # Note: sigmoid cannot be used with the default init.
-_WEIGHTS_INITIALIZER = None  # Default init
+_NONLINEARITY = tf.nn.relu  # can also be tf.nn.tanh
+_POOL = 'MAX'  # can also be 'AVG'
 
 
 flags.DEFINE_integer('train_steps', 10000, 'Number of training steps.')
@@ -120,6 +119,15 @@ flags.DEFINE_integer('eval_every', 50,
 flags.DEFINE_boolean('use_sua_approx', False,
                      'If True we use the SUA approximation for conv layers.')
 
+flags.DEFINE_string('dtype', 'float32',
+                    'The DTYPE to use for all computations. Can by float32 '
+                    'or float64.')
+
+
+flags.DEFINE_boolean('use_custom_patches_op', False,
+                     'If True we use the custom XLA implementation of the op '
+                     'which computes the second moment of patch vectors.')
+
 
 FLAGS = flags.FLAGS
 
@@ -138,16 +146,18 @@ class Model(snt.AbstractModule):
     reshape = snt.BatchReshape([28, 28, 1])
 
     conv = snt.Conv2D(2, 5, padding=snt.SAME, regularizers=regularizers)
-    relu = tf.nn.relu(conv(reshape(inputs)))
+    act = _NONLINEARITY(conv(reshape(inputs)))
 
-    max_pool = tf.nn.max_pool(relu, (2, 2), (2, 2), padding=snt.SAME)
+    pool = tf.nn.pool(act, window_shape=(2, 2), pooling_type=_POOL,
+                      padding=snt.SAME, strides=(2, 2))
 
     conv = snt.Conv2D(4, 5, padding=snt.SAME, regularizers=regularizers)
-    relu = tf.nn.relu(conv(max_pool))
+    act = _NONLINEARITY(conv(pool))
 
-    max_pool = tf.nn.max_pool(relu, (2, 2), (2, 2), padding=snt.SAME)
+    pool = tf.nn.pool(act, window_shape=(2, 2), pooling_type=_POOL,
+                      padding=snt.SAME, strides=(2, 2))
 
-    flatten = snt.BatchFlatten()(max_pool)
+    flatten = snt.BatchFlatten()(pool)
 
     linear = snt.Linear(32, regularizers=regularizers)(flatten)
 
@@ -234,11 +244,13 @@ def make_train_op(minibatch,
         loss_fn=loss_fn,
         damping_adaptation_decay=0.9,
         damping_adaptation_interval=FLAGS.damping_adaptation_interval,
-        min_damping=FLAGS.l2_reg,
+        min_damping=1e-6,
+        l2_reg=FLAGS.l2_reg,
         train_batch=minibatch,
         placement_strategy=placement_strategy,
         print_logs=print_logs,
-        tf_replicator=tf_replicator
+        tf_replicator=tf_replicator,
+        dtype=FLAGS.dtype,
         )
 
   elif FLAGS.optimizer == 'adam':
@@ -254,29 +266,30 @@ def make_train_op(minibatch,
 def compute_loss(logits=None,
                  labels=None,
                  layer_collection=None,
-                 return_error=False):
+                 return_error=False,
+                 use_regularizer=True):
   """Compute loss value."""
-  graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-  total_regularization_loss = tf.reduce_sum(graph_regularizers)
-
   loss_matrix = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
                                                                labels=labels)
-  loss = tf.reduce_mean(loss_matrix, axis=0)
-  regularized_loss = loss + total_regularization_loss
+  total_loss = tf.reduce_mean(loss_matrix, axis=0)
+
+  if use_regularizer:
+    graph_regularizers = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+    total_regularization_loss = tf.add_n(graph_regularizers)
+
+    total_loss += tf.cast(total_regularization_loss, dtype=total_loss.dtype)
 
   if layer_collection is not None:
     # Make sure never to confuse this with register_sigmoid_cross_entropy_loss!
     layer_collection.register_softmax_cross_entropy_loss(logits,
                                                          seed=FLAGS.seed + 1)
-    layer_collection.auto_register_layers()
-
   if return_error:
     error = 1.0 - tf.reduce_mean(tf.cast(
         tf.equal(labels, tf.argmax(logits, axis=1, output_type=tf.int32)),
         tf.float32))
-    return regularized_loss, error
+    return total_loss, error
 
-  return regularized_loss
+  return total_loss
 
 
 def load_mnist():
@@ -310,7 +323,7 @@ def load_mnist():
   else:
     # Version 2 using data_reader_alt.py (faster)
     images, labels, num_examples = mnist.load_mnist_as_tensors(
-        flatten_images=True)
+        flatten_images=True, dtype=tf.dtypes.as_dtype(FLAGS.dtype))
     dataset = (images, labels)
 
     # This version of CachedDataReader requires the dataset to NOT be shuffled
@@ -336,8 +349,37 @@ def group_assign(dest, source):
   return tf.group(*(d.assign(s) for d, s in zip(dest, source)))
 
 
-def construct_train_quants():
+def make_eval_ops(train_vars, ema):
+  # This does evaluation with and without Polyak averaging.
 
+  images, labels, _ = mnist.load_mnist_as_tensors(
+      flatten_images=True, dtype=tf.dtypes.as_dtype(FLAGS.dtype))
+
+  eval_model = Model()
+  eval_model(images)  # We need this dummy call because the variables won't
+                      # exist otherwise.
+  eval_vars = eval_model.variables
+
+  update_eval_model = group_assign(eval_vars, train_vars)
+
+  with tf.control_dependencies([update_eval_model]):
+    logits = eval_model(images)
+    eval_loss, eval_error = compute_loss(
+        logits=logits, labels=labels, return_error=True)
+
+    with tf.control_dependencies([eval_loss, eval_error]):
+      update_eval_model_avg = group_assign(
+          eval_vars, (ema.average(t) for t in train_vars))
+
+      with tf.control_dependencies([update_eval_model_avg]):
+        logits = eval_model(images)
+        eval_loss_avg, eval_error_avg = compute_loss(
+            logits=logits, labels=labels, return_error=True)
+
+  return eval_loss, eval_error, eval_loss_avg, eval_error_avg
+
+
+def construct_train_quants():
   with tf.device(FLAGS.device):
     # Load dataset.
     cached_reader, num_examples = load_mnist()
@@ -366,6 +408,8 @@ def construct_train_quants():
     (batch_loss, batch_error) = loss_fn(
         minibatch, layer_collection=layer_collection, return_error=True)
 
+    layer_collection.auto_register_layers()
+
     train_vars = training_model.variables
 
     # Make training op:
@@ -380,30 +424,15 @@ def construct_train_quants():
     with tf.control_dependencies([train_op]):
       train_op = ema.apply(train_vars)
 
-    # Make eval ops:
-    images, labels, num_examples = mnist.load_mnist_as_tensors(
-        flatten_images=True)
+    # We clear out the regularizers collection when creating our evaluation
+    # graph (which uses different variables). It is important that we do this
+    # only after the train op is constructed, since the minimize() will call
+    # into the loss function (which includes the regularizer):
+    tf.get_default_graph().clear_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 
-    eval_model = Model()
-    eval_model(images)  # We need this dummy call because for some reason the
-                        # variables won't exist otherwise...
-    eval_vars = eval_model.variables
-
-    update_eval_model = group_assign(eval_vars, train_vars)
-
-    with tf.control_dependencies([update_eval_model]):
-      logits = eval_model(images)
-      eval_loss, eval_error = compute_loss(
-          logits=logits, labels=labels, return_error=True)
-
-      with tf.control_dependencies([eval_loss, eval_error]):
-        update_eval_model_avg = group_assign(
-            eval_vars, (ema.average(t) for t in train_vars))
-
-        with tf.control_dependencies([update_eval_model_avg]):
-          logits = eval_model(images)
-          eval_loss_avg, eval_error_avg = compute_loss(
-              logits=logits, labels=labels, return_error=True)
+    # These aren't run in the same sess.run call as train_op:
+    (eval_loss, eval_error,
+     eval_loss_avg, eval_error_avg) = make_eval_ops(train_vars, ema)
 
   return (train_op, opt, batch_loss, batch_error, batch_size_schedule,
           batch_size, eval_loss, eval_error, eval_loss_avg, eval_error_avg)
@@ -416,10 +445,15 @@ def main(_):
     tf.enable_resource_variables()
 
   if not FLAGS.use_sua_approx:
-    # Temporary measure to save memory with giant batches
-    kfac.fisher_factors.set_global_constants(
-        sub_sample_inputs=True,
-        inputs_to_extract_patches_factor=0.1)
+    if FLAGS.use_custom_patches_op:
+      kfac.fisher_factors.set_global_constants(
+          use_patches_second_moment_op=True
+          )
+    else:
+      # Temporary measure to save memory with giant batches:
+      kfac.fisher_factors.set_global_constants(
+          sub_sample_inputs=True,
+          inputs_to_extract_patches_factor=0.2)
 
   tf.set_random_seed(FLAGS.seed)
   (train_op, opt, batch_loss, batch_error, batch_size_schedule, batch_size,

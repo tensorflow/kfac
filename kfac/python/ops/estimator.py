@@ -613,20 +613,15 @@ class FisherEstimator(object):
   def _create_cov_update_thunk(self, factor, scope):
     """Constructs a covariance update thunk for a single FisherFactor."""
 
-    def thunk(should_write=True,
-              ema_decay=None,
-              ema_weight=None):
-
-      if ema_decay is None:
-        ema_decay = self._cov_ema_decay
-
-      if ema_weight is None:
-        ema_weight = 1.0 - self._cov_ema_decay
+    def thunk(should_decay=True):
+      ema_decay = tf.cond(tf.convert_to_tensor(should_decay),
+                          lambda: self._cov_ema_decay,
+                          lambda: 1.0)
+      ema_weight = 1.0
 
       with tf.variable_scope(scope):
         with tf.control_dependencies([self._check_batch_sizes(factor)]):
-          return factor.make_covariance_update_op(
-              ema_decay, ema_weight, should_write=should_write)
+          return factor.make_covariance_update_op(ema_decay, ema_weight)
 
     return thunk
 
@@ -680,7 +675,8 @@ class FisherEstimator(object):
     for loss in self.layers.losses:
       with tf.colocate_with(self.layers.loss_colocation_ops[loss]):
         value = mult_func(loss,
-                          utils.generate_random_signs(inner_shape_func(loss)))
+                          utils.generate_random_signs(inner_shape_func(loss),
+                                                      dtype=loss.dtype))
         coeff = tf.cast(self.layers.loss_coeffs[loss], dtype=value.dtype)
         transformed_random_signs.append(tf.sqrt(coeff) * value)
     return transformed_random_signs

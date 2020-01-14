@@ -21,8 +21,6 @@ from __future__ import print_function
 # Dependency imports
 import numpy as np
 import tensorflow as tf
-
-from tensorflow.contrib.tpu.python.tpu import tpu_function
 from kfac.python.ops import utils
 
 

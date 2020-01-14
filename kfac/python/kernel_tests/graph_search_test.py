@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for tf.contrib.kfac.tensormatch."""
+"""Tests for tensormatch/graph_search.py."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -27,9 +27,6 @@ from kfac.python.ops import layer_collection as lc
 from kfac.python.ops import optimizer
 
 from kfac.python.ops.tensormatch import graph_search as gs
-
-# TODO(b/69055612): Remove once tests are enabled.
-# pylint: disable=invalid-name
 
 
 def _build_model():
@@ -143,14 +140,6 @@ def sparse_softmax_cross_entropy(labels,
 
 
 class GraphSearchTestCase(tf.test.TestCase):
-
-  def testEmptyGraph(self):
-    """Ensure nothing is registered if there are no variables/losses."""
-    with tf.Graph().as_default():
-      layer_collection = lc.LayerCollection()
-      gs.register_layers(layer_collection, tf.trainable_variables())
-      self.assertEqual(0, len(layer_collection.fisher_blocks))
-      self.assertEqual(0, len(layer_collection.losses))
 
   def testRegisterLayers(self):
     """Ensure graph search can find a single layer network."""
@@ -401,8 +390,7 @@ class GraphSearchTestCase(tf.test.TestCase):
                            {k: record_list_dict[k]
                             for k in expected_keys})
 
-  # TODO(b/69055612): Enable once layer_collection is updated
-  def DISABLED_test_rnn_multi(self):
+  def test_rnn_multi(self):
     """Test automatic registration on a static RNN.
 
     The model tested here is designed for MNIST classification. To classify
@@ -485,13 +473,8 @@ class GraphSearchTestCase(tf.test.TestCase):
       layer_collection_manual.register_fully_connected_multi(
           (w_output, b_output), a_list[1:], s_out_list)
 
-      # Constructing the optimizer performs automatic layer registration.
-      auto_optimizer = optimizer.KfacOptimizer(  # pylint: disable=unused-variable
-          learning_rate=1,
-          cov_ema_decay=1,
-          damping=1,
-          layer_collection=layer_collection_auto,
-          momentum=1)
+      gs.register_layers(layer_collection_auto,
+                         tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES))
 
       assert_fisher_blocks_match(self, layer_collection_manual,
                                  layer_collection_auto)
@@ -507,6 +490,9 @@ class GraphSearchTestCase(tf.test.TestCase):
       tensor_dict = _build_model()
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
+
       # TODO(b/69055612): remove this manual registration once layer_collection
       # implements register_fully_connected_multi.
       layer_collection.register_fully_connected(
@@ -548,6 +534,9 @@ class GraphSearchTestCase(tf.test.TestCase):
 
       # Group variables as affine layers.
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+      layer_collection.register_squared_error_loss(out_1)
+
       layer_collection.define_linked_parameters(
           (w_0, b_0), approximation=lc.APPROX_KRONECKER_NAME)
       layer_collection.define_linked_parameters(
@@ -563,6 +552,9 @@ class GraphSearchTestCase(tf.test.TestCase):
 
       # Group variables as linear layers and generic parameters.
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+      layer_collection.register_squared_error_loss(out_1)
+
       layer_collection.define_linked_parameters(
           w_0, approximation=lc.APPROX_DIAGONAL_NAME)
       layer_collection.define_linked_parameters(
@@ -583,9 +575,7 @@ class GraphSearchTestCase(tf.test.TestCase):
                             fb.FullyConnectedKFACBasicFB)
       self.assertIsInstance(layer_collection.fisher_blocks[b_1], fb.FullFB)
 
-  # TODO(b/69055612): Enable once layer_collection implements
-  # register_fully_connected_multi.
-  def DISABLED_test_specify_approximation_shared_parameters(self):
+  def test_specify_approximation_shared_parameters(self):
     """Test specifying approximations with layers containing shared parameters.
 
     If linked parameters are identified along with an approximation, then
@@ -595,6 +585,9 @@ class GraphSearchTestCase(tf.test.TestCase):
       tensor_dict = _build_model()
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection.define_linked_parameters(
           tensor_dict['w'], approximation=lc.APPROX_KRONECKER_INDEP_NAME)
       layer_collection.define_linked_parameters(
@@ -610,19 +603,20 @@ class GraphSearchTestCase(tf.test.TestCase):
       self.assertIsInstance(layer_collection.fisher_blocks[tensor_dict['w']],
                             fb.FullyConnectedMultiIndepFB)
       self.assertIsInstance(
-          layer_collection.fisher_blocks[(tensor_dict['b_0'],)],
+          layer_collection.fisher_blocks[tensor_dict['b_0']],
           fb.NaiveDiagonalFB)
       self.assertIsInstance(
-          layer_collection.fisher_blocks[(tensor_dict['b_1'],)], fb.FullFB)
+          layer_collection.fisher_blocks[tensor_dict['b_1']], fb.FullFB)
 
-  # TODO(b/69055612): Enable once layer_collection implements
-  # register_fully_connected_multi.
-  def DISABLED_test_tied_weights_untied_bias_registered_weights(self):
+  def test_tied_weights_untied_bias_registered_weights(self):
     """Tests that graph search produces right solution on toy model."""
     with tf.Graph().as_default():
       tensor_dict = _build_model()
 
       layer_collection_manual = lc.LayerCollection()
+      layer_collection_manual.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection_manual.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection_manual.register_fully_connected_multi(
           tensor_dict['w'], (tensor_dict['x'], tensor_dict['y']),
           (tensor_dict['pre_bias_0'], tensor_dict['pre_bias_1']))
@@ -630,6 +624,9 @@ class GraphSearchTestCase(tf.test.TestCase):
       layer_collection_manual.register_generic(tensor_dict['b_1'], batch_size=1)
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection.define_linked_parameters((tensor_dict['w']))
       gs.register_layers(
           layer_collection,
@@ -649,6 +646,9 @@ class GraphSearchTestCase(tf.test.TestCase):
       tensor_dict = _build_model()
 
       layer_collection_manual = lc.LayerCollection()
+      layer_collection_manual.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection_manual.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection_manual.register_fully_connected(
           params=(tensor_dict['w'], tensor_dict['b_1']),
           inputs=tensor_dict['y'],
@@ -657,6 +657,9 @@ class GraphSearchTestCase(tf.test.TestCase):
           tensor_dict['b_0'], batch_size=32)
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection.define_linked_parameters((tensor_dict['w'],
                                                  tensor_dict['b_1']))
       gs.register_layers(
@@ -676,9 +679,11 @@ class GraphSearchTestCase(tf.test.TestCase):
     the user register (w) as a linked tensor.
     """
     with tf.Graph().as_default():
-      _build_model()
+      tensor_dict = _build_model()
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
 
       with self.assertRaises(gs.AmbiguousRegistrationError):
         gs.register_layers(layer_collection,
@@ -695,6 +700,9 @@ class GraphSearchTestCase(tf.test.TestCase):
       tensor_dict = _build_model()
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(tensor_dict['out_0'])
+      layer_collection.register_squared_error_loss(tensor_dict['out_1'])
+
       layer_collection.define_linked_parameters((tensor_dict['b_1']))
 
       with self.assertRaises(gs.AmbiguousRegistrationError):
@@ -721,10 +729,16 @@ class GraphSearchTestCase(tf.test.TestCase):
       out_1 = tf.matmul(y, w) + b_0
 
       layer_collection_manual = lc.LayerCollection()
+      layer_collection_manual.register_squared_error_loss(out_0)
+      layer_collection_manual.register_squared_error_loss(out_1)
+
       layer_collection_manual.register_fully_connected_multi(
           (w, b_0), (x, y), (out_0, out_1), num_uses=2)
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+      layer_collection.register_squared_error_loss(out_1)
+
       gs.register_layers(
           layer_collection,
           tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES),
@@ -733,9 +747,7 @@ class GraphSearchTestCase(tf.test.TestCase):
       assert_fisher_blocks_match(self, layer_collection,
                                  layer_collection_manual)
 
-  # TODO(b/69055612): Enable once layer_collection implements
-  # register_fully_connected_multi.
-  def DISABLED_test_multiple_weights(self):
+  def test_multiple_weights(self):
     """Test that graph search provides desired registration on toy model.
 
     In this toy example we apply the same linear layer to two different inputs.
@@ -757,15 +769,16 @@ class GraphSearchTestCase(tf.test.TestCase):
                                                              (out_0, out_1))
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+      layer_collection.register_squared_error_loss(out_1)
+
       gs.register_layers(layer_collection,
                          tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES))
 
       assert_fisher_blocks_match(self, layer_collection,
                                  layer_collection_manual)
 
-  # TODO(b/69055612): Enable once layer_collection implements
-  # register_fully_connected_multi.
-  def DISABLED_test_subset_weights_manual_registration(self):
+  def test_subset_weights_manual_registration(self):
     """Test that graph search provides desired registration on toy model.
 
     In this toy example we apply the same matmul op to two different inputs
@@ -774,21 +787,23 @@ class GraphSearchTestCase(tf.test.TestCase):
     """
     with tf.Graph().as_default():
       w = tf.get_variable('W', [10, 10])
-      b_0 = tf.get_variable('b_0', [
-          10,
-      ])
+      b_0 = tf.get_variable('b_0', [10,])
       x = tf.placeholder(tf.float32, shape=(32, 10))
       y = tf.placeholder(tf.float32, shape=(32, 10))
 
-      out_0 = tf.matmul(x, w) + b_0
+      out_n1 = tf.matmul(x, w)
+      out_0 = out_n1 + b_0
       out_1 = tf.matmul(y, w)
 
       layer_collection_manual = lc.LayerCollection()
       layer_collection_manual.register_fully_connected_multi(
-          w, (x, y), (out_0, out_1))
+          w, (x, y), (out_n1, out_1))
       layer_collection_manual.register_generic(b_0, batch_size=1)
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+      layer_collection.register_squared_error_loss(out_1)
+
       layer_collection.define_linked_parameters(w)
       gs.register_layers(
           layer_collection,
@@ -831,9 +846,12 @@ class GraphSearchTestCase(tf.test.TestCase):
       out_0 = tf.matmul(x, w) + b
 
       layer_collection = lc.LayerCollection()
+      layer_collection.register_squared_error_loss(out_0)
+
       gs.register_layers(layer_collection, [w, b])
 
       layer_collection_manual = lc.LayerCollection()
+      layer_collection_manual.register_squared_error_loss(out_0)
       layer_collection_manual.register_fully_connected((w, b), x, out_0)
 
       assert_fisher_blocks_match(self, layer_collection,

@@ -112,7 +112,7 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                loss,
                global_step=None,
                var_list=None,
-               gate_gradients=tf.train.Optimizer.GATE_OP,
+               gate_gradients=tf.compat.v1.train.Optimizer.GATE_OP,
                aggregation_method=None,
                colocate_gradients_with_ops=True,
                name=None,
@@ -121,12 +121,15 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     # This method has the same general arguments as the minimize methods in
     # standard optimizers do.
 
-    cov_update_thunks, _ = self.make_vars_and_create_op_thunks()
+    if not self._made_vars_already:
+      cov_update_thunks, _ = self.make_vars_and_create_op_thunks()
+    else:
+      (_, cov_update_thunks, _, _) = self.create_ops_and_vars_thunks()
+
     self._made_vars_already = True
 
     def update_cov_and_burnin_counter():
-      cov_update = tf.group(*(thunk(ema_decay=1.0,
-                                    should_write=True)
+      cov_update = tf.group(*(thunk(should_decay=False)
                               for thunk in cov_update_thunks))
 
       burnin_counter_update = self._burnin_counter.assign(
@@ -173,7 +176,8 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                     "should avoid using optimizer wrappers like "
                     "CrossShardOptimizer with K-FAC that try to bypass the "
                     "minimize() method. The burn-in feature won't work when "
-                    "the class is used this way, for example.")
+                    "the class is used this way, for example. And K-FAC does "
+                    "its own cross-relica syncronization.")
     else:
       (_, cov_update_thunks,
        _, inv_update_thunks) = self.create_ops_and_vars_thunks()

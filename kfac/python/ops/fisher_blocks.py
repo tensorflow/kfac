@@ -410,7 +410,7 @@ class NaiveDiagonalFB(DiagonalFB):
 
     Args:
       layer_collection: The LayerCollection object which owns this block.
-      params: The parameters of this layer (Tensor or tuple of Tensors).
+      params: The parameters of this layer (must be a single Tensor).
     """
     self._params = params
     self._batch_sizes = []
@@ -667,10 +667,10 @@ class ConvDiagonalFB(InputOutputMultiTower, DiagonalFB):
     inputs, grads_list = self._process_data(grads_list)
 
     # Infer number of locations upon which convolution is applied.
-    self._num_locations = num_conv_locations(inputs[0].shape.as_list(),
-                                             list(self._filter_shape),
-                                             self._strides,
-                                             self._padding)
+    self._num_locations = utils.num_conv_locations(inputs[0].shape.as_list(),
+                                                   list(self._filter_shape),
+                                                   self._strides,
+                                                   self._padding)
 
     self._factor = self._layer_collection.make_or_get_factor(
         self._factor_implementation,
@@ -1048,10 +1048,10 @@ class ConvKFCBasicFB(InputOutputMultiTower, KroneckerProductFB):
     inputs, grads_list = self._process_data(grads_list)
 
     # Infer number of locations upon which convolution is applied.
-    self._num_locations = num_conv_locations(inputs[0].shape.as_list(),
-                                             list(self._filter_shape),
-                                             self._strides,
-                                             self._padding)
+    self._num_locations = utils.num_conv_locations(inputs[0].shape.as_list(),
+                                                   list(self._filter_shape),
+                                                   self._strides,
+                                                   self._padding)
 
     if self._use_sua_approx_for_input_factor:
       self._input_factor = self._layer_collection.make_or_get_factor(
@@ -1311,59 +1311,6 @@ def maybe_tuple(obj):
   return tuple(obj)
 
 
-def num_conv_locations(input_shape, filter_shape, strides, padding):
-  """Returns the number of spatial locations a conv kernel is applied to.
-
-  Args:
-    input_shape: List of ints representing shape of inputs to
-      tf.nn.convolution().
-    filter_shape: List of ints representing shape of filter to
-      tf.nn.convolution().
-    strides: List of ints representing strides along spatial dimensions as
-      passed in to tf.nn.convolution().
-    padding: string representing the padding method, either 'VALID' or 'SAME'.
-
-  Returns:
-    A scalar |T| denoting the number of spatial locations for the Conv layer.
-
-  Raises:
-    ValueError: If input_shape, filter_shape don't represent a 1-D or 2-D
-      convolution.
-  """
-  if len(input_shape) != 4 and len(input_shape) != 3:
-    raise ValueError("input_shape must be length 4, corresponding to a Conv2D,"
-                     " or length 3, corresponding to a Conv1D.")
-  if len(input_shape) != len(filter_shape):
-    raise ValueError("Inconsistent number of dimensions between input and "
-                     "filter for convolution")
-
-  if strides is None:
-    if len(input_shape) == 4:
-      strides = [1, 1, 1, 1]
-    else:
-      strides = [1, 1, 1]
-
-  # Use negative integer division to implement 'rounding up'.
-  # Formula for convolution shape taken from:
-  # http://machinelearninguru.com/computer_vision/basics/convolution/convolution_layer.html
-  if len(input_shape) == 3:
-    if padding is not None and padding.lower() == "valid":
-      out_width = -(-(input_shape[1] - filter_shape[0] + 1) // strides[1])
-    else:
-      out_width = -(-input_shape[1] // strides[1])
-
-    return out_width
-  else:
-    if padding is not None and padding.lower() == "valid":
-      out_height = -(-(input_shape[1] - filter_shape[0] + 1) // strides[1])
-      out_width = -(-(input_shape[2] - filter_shape[1] + 1) // strides[2])
-    else:
-      out_height = -(-input_shape[1] // strides[1])
-      out_width = -(-input_shape[2] // strides[2])
-
-    return out_height * out_width
-
-
 class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
   """Adds methods for multi-use/time-step case to InputOutputMultiTower."""
 
@@ -1383,11 +1330,11 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
     is tower, the second is use/time-step. grads_list, meanwhile, is a list
     over sources of such lists of lists.
 
-    The second possible data format is where self._inputs is a Tensor with
-    uses/times-steps folded into the batch dimension.  i.e. it is a Tensor
-    of shape [num_uses * batch_size, ...] which represents a reshape of a
-    Tensor of shape [num_uses, batch_size, ...].  And similarly grads_list is
-    a list over sources of such Tensors.
+    The second possible data format is where self._inputs is a list of Tensors
+    (over towers), where each Tensor has uses/times-steps folded into the batch
+    dimension. i.e. they are Tensors of shape [num_uses * batch_size, ...],
+    which represent reshapes of a Tensor of shape [num_uses, batch_size, ...].
+    And similarly grads_list is a list over sources of such lists of Tensors.
 
     There are two possible formats which inputs and grads_list are transformed
     into.
@@ -1646,10 +1593,10 @@ class ConvKFCBasicMultiIndepFB(InputOutputMultiTowerMultiUse,
     inputs, grads_list = self._process_data(grads_list)
 
     # Infer number of locations upon which convolution is applied.
-    self._num_locations = num_conv_locations(inputs[0].shape.as_list(),
-                                             list(self._filter_shape),
-                                             self._strides,
-                                             self._padding)
+    self._num_locations = utils.num_conv_locations(inputs[0].shape.as_list(),
+                                                   list(self._filter_shape),
+                                                   self._strides,
+                                                   self._padding)
 
     self._input_factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ConvInputMultiKF,

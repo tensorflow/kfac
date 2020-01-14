@@ -22,6 +22,7 @@ import inspect
 import numbers
 import re
 import warnings
+import six
 import tensorflow as tf
 
 from tensorflow.python.keras import backend
@@ -33,8 +34,9 @@ from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
 _KFAC_OPT_CLASS = periodic_inv_cov_update_kfac_opt.PeriodicInvCovUpdateKfacOpt
 
 # TODO(b/134945404): Change how default config args are retrieved.
-_KFAC_ARGS = inspect.getargspec(optimizer.KfacOptimizer.__init__)
-_PERIODIC_KFAC_ARGS = inspect.getargspec(_KFAC_OPT_CLASS.__init__)
+getfullargspec = inspect.getfullargspec if six.PY3 else inspect.getargspec
+_KFAC_ARGS = getfullargspec(optimizer.KfacOptimizer.__init__)
+_PERIODIC_KFAC_ARGS = getfullargspec(_KFAC_OPT_CLASS.__init__)
 _DEFAULT_KWARGS = dict(zip(reversed(_KFAC_ARGS.args),
                            reversed(_KFAC_ARGS.defaults)))
 _DEFAULT_KWARGS.update(zip(reversed(_PERIODIC_KFAC_ARGS.args),

@@ -148,7 +148,9 @@ def register_layers(layer_collection, varlist, batch_size=None):
     batch_size: A `int` representing the batch size. Needs to specified if
       registering generic variables that don't match any layer patterns or
       if time/uses is folded. If the time/uses dimension is merged with
-      batch then this is used to infer number of uses/time-steps.
+      batch then this is used to infer number of uses/time-steps. NOTE: In the
+      replicated context this must be the per-replica batch size, and not
+      the total batch size.
 
   Returns:
     A `dict` of the entries registered to layer_collection.fisher_blocks.
@@ -173,11 +175,9 @@ def register_layers(layer_collection, varlist, batch_size=None):
   user_registered_variables = frozenset(user_registered_variables)
 
   if not layer_collection.losses:
-    register_subgraph_layers(
-        layer_collection,
-        varlist,
-        user_registered_variables=user_registered_variables,
-        batch_size=batch_size)
+    raise ValueError('No registered losses found. Automatic registration '
+                     'requires all losses in the graph to be registered before '
+                     'it can begin.')
   else:
     inputs_by_loss = tuple(tuple(loss.inputs for loss in loss_list)
                            for loss_list in layer_collection.towers_by_loss)
@@ -197,10 +197,10 @@ def register_layers(layer_collection, varlist, batch_size=None):
         register_subgraph_layers(
             layer_collection,
             varlist,
+            subgraph,
             user_registered_variables=user_registered_variables,
             reuse=reuse,
-            batch_size=batch_size,
-            subgraph=subgraph)
+            batch_size=batch_size)
 
   fisher_blocks = layer_collection.fisher_blocks
   return {
@@ -211,15 +211,16 @@ def register_layers(layer_collection, varlist, batch_size=None):
 
 def register_subgraph_layers(layer_collection,
                              varlist,
+                             subgraph,
                              user_registered_variables=frozenset(),
                              reuse=False,
-                             batch_size=None,
-                             subgraph=None):
+                             batch_size=None):
   """Walk a subgraph and register all layers to layer_collection.
 
   Args:
     layer_collection: A `LayerCollection` to use for registering layers.
     varlist: A list of the variables in the graph.
+    subgraph: The `SubGraph` to search.
     user_registered_variables: A set of all the variables the user has manually
       registered. No layers using any of these variables should be registered.
     reuse: (OPTIONAL) bool. If True, then `layer_collection`
@@ -231,8 +232,6 @@ def register_subgraph_layers(layer_collection,
       if the time/uses dimension is folded into batch. If the time/uses
       dimension is merged with batch then this is used to infer number of
       uses/time-steps.
-    subgraph: The `SubGraph` to search. Defaults to
-      `layer_collections.subgraph`; if this is None, searches the entire graph.
 
   Raises:
     ValueError: If any variables specified as part of linked groups were not
@@ -252,30 +251,34 @@ def register_subgraph_layers(layer_collection,
 
   # Patterns return bindings to raw tensors, so we need to be able to map back
   # to variables from the tensors those variables reference.
-  def var_to_tensor(var):
+  def var_to_tensors(var):
     if resource_variable_ops.is_resource_variable(var):
-      return var.handle
+      if tf.control_flow_v2_enabled():
+        # TODO(b/143690035): Note that the "captures" property relies on an
+        # API which might change.
+        captures = layer_collection.graph.captures
+        return [h for vh, h in captures if vh is var.handle]
+      else:
+        return [var.handle]
     if utils.is_reference_variable(var):
-      return tf_ops.internal_convert_to_tensor(var, as_ref=True)
+      return [tf_ops.convert_to_tensor(var, as_ref=True)]
     raise ValueError('%s is not a recognized variable type.' % str(var))
 
-  tensors_to_variables = {var_to_tensor(var): var for var in varlist}
+  tensors_to_variables = {tensor: var for var in varlist
+                          for tensor in var_to_tensors(var)}
 
   # Get all the ops from the graph.
   ops = layer_collection.graph.get_operations()
 
   # Filter out tf.identity ops since otherwise the matcher generates spurious
   # matches.
-  ops = (op for op in ops if not graph_utils.is_identity(op))
+  ops = tuple(op for op in ops if not graph_utils.is_identity(op))
 
   # Extract out the output tensors from the ops
-  tensors = (out for op in ops for out in op.outputs)
+  tensors = tuple(out for op in ops for out in op.outputs)
 
   # Filter the tensors to include only those in the subgraph.
-  if subgraph is None:
-    subgraph = layer_collection.subgraph
-  if subgraph is not None:
-    tensors = subgraph.filter_list(tensors)
+  tensors = subgraph.filter_list(tensors)
 
   # Go through each tensor and try to match each pattern to it.
   record_list_dict = dict()
@@ -497,6 +500,14 @@ def register_records(layer_collection,
       is_batch_time_folded = not (first_dim is None or first_dim == batch_size)
       if is_batch_time_folded:
         num_uses = first_dim // batch_size
+        if num_uses == 0:
+          raise ValueError('It looks like the batch_size passed to the auto-'
+                           'registration function was larger than expected. '
+                           'The likely cause of this is that you passed in '
+                           'the overall batch size instead of the per-replica '
+                           'batch size. When using K-FAC with replication all '
+                           'batch sizes passed to K-FAC and its helper modules '
+                           'should be their per-replica sizes.')
 
     if record_type is RecordType.fully_connected:
       if len(record_list) > 1:

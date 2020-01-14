@@ -46,7 +46,11 @@ def is_var(node):
   if ((resource_variable_ops.is_resource_variable(node) or
        utils.is_reference_variable(node))):
     return True
-  if node.dtype == tf.resource and node.op.type == 'VarHandleOp':
+  # TODO(b/143690035): Note that the Placeholder type handles the Control Flow
+  # V2 case, but this could stop working in the future if the implementation of
+  # Control Flow V2 changes.
+  if node.dtype == tf.resource and (node.op.type == 'VarHandleOp'
+                                    or node.op.type == 'Placeholder'):
     return True
   return False
 

@@ -29,12 +29,13 @@ __all__ = [
 ]
 
 
-def load_mnist_as_tensors(flatten_images=True):
+def load_mnist_as_tensors(flatten_images=True, dtype=tf.float32):
   """Loads MNIST as Tensors.
 
   Args:
     flatten_images: bool. If True, [28, 28, 1]-shaped images are flattened into
       [784]-shaped vectors.
+    dtype: The TF dtype to return the images as.
 
   Returns:
     images, labels, num_examples
@@ -59,12 +60,12 @@ def load_mnist_as_tensors(flatten_images=True):
   else:
     images = images.reshape(images.shape[0], 28, 28, 1)
 
-  images = images.astype('float32')
+  images = images.astype('float64')
   labels = labels.astype('int32')
 
   images /= 255.
 
-  images = tf.constant(images)
+  images = tf.constant(images, dtype=dtype)
   labels = tf.constant(labels)
 
   return images, labels, num_examples

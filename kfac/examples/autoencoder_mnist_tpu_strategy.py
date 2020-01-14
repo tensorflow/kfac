@@ -14,8 +14,10 @@
 # ==============================================================================
 """Implementation of Deep AutoEncoder from Martens & Grosse (2015).
 
-This script demonstrates training on TPUs with TPUStrategy using KFAC optimizer
-and updating the damping parameter according to the Levenberg-Marquardt rule.
+This script demonstrates training on TPUs with TPUStrategy using the KFAC
+optimizer, updating the damping parameter according to the
+Levenberg-Marquardt rule, and using the quadratic model method for adapting
+the learning rate and momentum parameters.
 
 See third_party/tensorflow_kfac/google/examples/ae_tpu_xm_launcher.py
 for an example Borg launch script.  If you can't access this launch script,
