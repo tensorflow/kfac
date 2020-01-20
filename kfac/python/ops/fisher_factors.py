@@ -30,8 +30,6 @@ from collections import OrderedDict
 
 from tensorflow.python.util import nest
 from kfac.python.ops import linear_operator as lo
-from tensorflow.python.training import moving_averages
-from kfac.python.ops import patches_second_moment as psm
 from kfac.python.ops import utils
 
 
@@ -1791,43 +1789,8 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
     # TODO(b/64144716): there is potential here for a big savings in terms of
     # memory use.
     if _USE_PATCHES_SECOND_MOMENT_OP:
-
-      psm_mat, pfm_vec = psm.patches_second_moment(
-          inputs,
-          self._filter_shape[0:2],
-          stride=self._strides[1:3],
-          padding=self._padding)
-
-      num_patches = utils.num_conv_locations(inputs.shape.as_list(),
-                                             list(self._filter_shape),
-                                             self._strides, self._padding)
-      batch_size = utils.get_shape(inputs)[0]
-      normalizer = tf.cast(num_patches * batch_size, dtype=psm_mat.dtype)
-      if self._has_bias:
-        # For conv layers with biases we require that an extra vector of ones
-        # to be concatenated to the last dimension of the patches matrix
-        # (output of tf.extract_image_patches) before we
-        # compute the statistics.
-
-        # Note that this produces an output matrix which has one extra row and
-        # column as shown below.
-        # [ psm_mat   pfm_vec ]
-        # [ pfm_vec'  num_patches*batch_size]
-
-        pfm_vec_num_patches = tf.expand_dims(
-            tf.concat(
-                [pfm_vec, tf.expand_dims(normalizer, axis=0)],
-                axis=0),
-            axis=1)
-        psm_mat_pfm_vec = tf.concat(
-            [psm_mat, tf.expand_dims(pfm_vec, axis=0)], axis=0)
-        cov_mat = (1. / normalizer) * tf.concat(
-            [psm_mat_pfm_vec, pfm_vec_num_patches], axis=1)
-        return (cov_mat + tf.transpose(cov_mat)) / tf.cast(2.0, cov_mat.dtype)
-      else:
-        psm_mat = (1. / normalizer) * psm_mat
-        return (psm_mat + tf.transpose(psm_mat)) / tf.cast(2.0, psm_mat.dtype)
-
+      raise NotImplementedError  # patches op is not available outside of Google,
+                                 # sorry! You'll need to turn it off to proceed.
     else:
       if self._extract_patches_fn in [None, "extract_convolution_patches"]:
         patches = utils.extract_convolution_patches(

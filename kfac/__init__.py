@@ -30,7 +30,6 @@ from kfac.python.ops import linear_operator
 from kfac.python.ops import loss_functions
 from kfac.python.ops import op_queue
 from kfac.python.ops import optimizer
-from kfac.python.ops import patches_second_moment
 from kfac.python.ops import placement
 from kfac.python.ops import utils
 from kfac.python.ops.kfac_utils import async_inv_cov_update_kfac_opt
