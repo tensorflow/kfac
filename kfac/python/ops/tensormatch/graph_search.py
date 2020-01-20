@@ -261,7 +261,7 @@ def register_subgraph_layers(layer_collection,
       else:
         return [var.handle]
     if utils.is_reference_variable(var):
-      return [tf_ops.convert_to_tensor(var, as_ref=True)]
+      return [tf_ops.internal_convert_to_tensor(var, as_ref=True)]
     raise ValueError('%s is not a recognized variable type.' % str(var))
 
   tensors_to_variables = {tensor: var for var in varlist
