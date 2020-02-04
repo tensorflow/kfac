@@ -19,7 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import json
-import warnings
+from absl import logging
 import tensorflow as tf
 
 from tensorflow.python.keras.saving import hdf5_format
@@ -146,9 +146,9 @@ def load_model(filepath, custom_objects=None, optimizer_name=None):
       try:
         model.optimizer.set_weights(opt_weight_vals)
       except ValueError:
-        warnings.warn('Error in loading the saved optimizer state. As a '
-                      'result, your model is starting with a freshly '
-                      'initialized optimizer.')
+        logging.warn('Error in loading the saved optimizer state. As a '
+                     'result, your model is starting with a freshly '
+                     'initialized optimizer.')
   finally:
     if should_open_file:
       model_file.close()

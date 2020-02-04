@@ -21,9 +21,10 @@ from __future__ import print_function
 import inspect
 import numbers
 import re
-import warnings
+from absl import logging
 import six
 import tensorflow as tf
+
 
 from tensorflow.python.keras import backend
 from kfac.python.keras import utils
@@ -194,8 +195,8 @@ class Kfac(tf.keras.optimizers.Optimizer):
       ValueError: If learning_rate or momentum are set with adaptive=True.
     """
     if tf.executing_eagerly():
-      warnings.warn('Eager mode appears to be enabled. Kfac is untested in '
-                    'eager mode.')
+      logging.warn('Eager mode appears to be enabled. Kfac is untested in '
+                   'eager mode.')
     if _sentinel:
       raise ValueError('Do not pass positional arguments, only use keyword '
                        'arguments.')

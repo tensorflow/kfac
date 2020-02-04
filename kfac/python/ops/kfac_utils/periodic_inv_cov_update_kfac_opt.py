@@ -19,9 +19,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import warnings
 # Dependency imports
 
+from absl import logging
 import tensorflow as tf
 
 from kfac.python.ops import optimizer
@@ -171,13 +171,13 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     if not self._made_vars_already:
       (cov_update_thunks,
        inv_update_thunks) = self.make_vars_and_create_op_thunks()
-      warnings.warn("It looks like apply_gradients() was called before "
-                    "minimze() was called. This is not recommended, and you "
-                    "should avoid using optimizer wrappers like "
-                    "CrossShardOptimizer with K-FAC that try to bypass the "
-                    "minimize() method. The burn-in feature won't work when "
-                    "the class is used this way, for example. And K-FAC does "
-                    "its own cross-relica syncronization.")
+      logging.warn("It looks like apply_gradients() was called before "
+                   "minimze() was called. This is not recommended, and you "
+                   "should avoid using optimizer wrappers like "
+                   "CrossShardOptimizer with K-FAC that try to bypass the "
+                   "minimize() method. The burn-in feature won't work when "
+                   "the class is used this way, for example. And K-FAC does "
+                   "its own cross-relica syncronization.")
     else:
       (_, cov_update_thunks,
        _, inv_update_thunks) = self.create_ops_and_vars_thunks()

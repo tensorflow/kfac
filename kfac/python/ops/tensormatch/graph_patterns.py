@@ -94,6 +94,25 @@ def FusedBatchNormOutput(in_pattern=Tensor('in'),
 Nonlinearity = ('?:choice', Relu, Tanh)  # pylint: disable=invalid-name
 
 
+def ScaleAndShift(in_pattern=Tensor('in'),
+                  scale_name='scale',
+                  shift_name='shift',
+                  output_name='out'):
+  """Pattern constructor for matching scale & shift operation subgraphs."""
+
+  scale_pat_r = (Mul, ('In', in_pattern, Variable(scale_name)))
+  scale_pat_l = (Mul, ('In', Variable(scale_name), in_pattern))
+
+  scale_pat = ('?:choice', scale_pat_r, scale_pat_l)
+
+  pat_r = (('?:choice', Add, AddV2),
+           ('In', (Tensor, ('In', scale_pat)), Variable(shift_name)))
+  pat_l = (('?:choice', Add, AddV2),
+           ('In', Variable(shift_name), (Tensor, ('In', scale_pat))))
+
+  return (Tensor(output_name), ('In', ('?:choice', pat_r, pat_l, scale_pat)))
+
+
 def Affine(in_pattern=Tensor('in'),
            linear_op_name='linear_op',
            weights_name='weights',

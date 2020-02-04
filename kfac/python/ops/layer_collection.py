@@ -351,9 +351,21 @@ class LayerCollection(object):
   def default_conv2d_multi_approximation(self):
     return self._default_conv2d_multi_approximation
 
+  def set_default_conv2d_multi_approximation(self, value):
+    if value not in self._conv2d_multi_approx_to_block_types:
+      raise ValueError("{} is not a valid approximation for a conv2d "
+                       "multi layer.".format(value))
+    self._default_conv2d_multi_approximation = value
+
   @property
   def default_scale_and_shift_approximation(self):
     return self._default_scale_and_shift_approximation
+
+  def set_default_scale_and_shift_approximation(self, value):
+    if value not in self._scale_and_shift_approx_to_block_types:
+      raise ValueError("{} is not a valid approximation for a scale & shift "
+                       "layer.".format(value))
+    self._default_scale_and_shift_approximation = value
 
   def auto_register_layers(self, var_list=None, batch_size=None):
     """Registers remaining unregistered layers automatically using a scanner.
@@ -1419,7 +1431,7 @@ class LayerCollection(object):
 
     block = self._register_block(params, block_type(self, broadcast_dim,
                                                     has_shift=has_shift),
-                                reuse=reuse)
+                                 reuse=reuse)
     block.register_additional_tower(inputs, outputs)
 
     self._add_uses(params, 1)

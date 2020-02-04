@@ -14,9 +14,10 @@
 # ==============================================================================
 """Functions for automatically registering network layers for K-FAC."""
 import collections
-import warnings
+from absl import logging
 import enum
 import tensorflow as tf
+
 
 from tensorflow.python.framework import ops as tf_ops
 from tensorflow.python.ops import resource_variable_ops
@@ -29,6 +30,7 @@ from kfac.python.ops.tensormatch import tensorflow_graph_util as graph_utils
 class RecordType(enum.Enum):
   fully_connected = 1
   conv2d = 2
+  scale_and_shift = 3
 
 
 class AmbiguousRegistrationError(Exception):
@@ -125,6 +127,49 @@ def record_affine_from_bindings(bindings, consumed_tensors,
 
     return MatchRecord(
         record_type=record_type,
+        params=params,
+        tensor_set=consumed_tensors,
+        data=record_data)
+
+
+def record_scale_and_shift_from_bindings(bindings, consumed_tensors,
+                                         tensors_to_variables):
+  """Construct a MatchRecord for the given ScaleAndShift pattern bindings.
+
+  Args:
+    bindings: A dict representing a matched pattern. Strings representing
+      components of the pattern are mapped to the matched Tensors.
+    consumed_tensors: A set of all tensors consumed by the matched pattern.
+      This should be a superset of the values of the bindings dict.
+    tensors_to_variables: A dict mapping Tensors to the variables referencing
+      them.
+
+  Returns:
+    A `MatchRecord` containing the information necessary to register the layer.
+  """
+  if 'shift' in bindings:
+    shift = tensors_to_variables.get(bindings['shift'])
+  else:
+    shift = None
+  scale = tensors_to_variables.get(bindings['scale'], None)
+
+  inputs = bindings['in']
+  outputs = bindings['out']
+
+  # I'm not sure if this can ever actually happen.
+  if shift is not None and scale is None:
+    raise ValueError("Can't register scale_and_shift with only shift.")
+
+  if scale is not None and shift is not None:
+    params = (scale, shift)
+  else:
+    params = scale
+
+  if params is not None:
+    record_data = dict(inputs=inputs, outputs=outputs)
+
+    return MatchRecord(
+        record_type=RecordType.scale_and_shift,
         params=params,
         tensor_set=consumed_tensors,
         data=record_data)
@@ -247,7 +292,9 @@ def register_subgraph_layers(layer_collection,
 
   # List of patterns and binding functions to use when we match one of them
   match_register_list = [(gm.matcher_with_consumed(gp.Affine),
-                          record_affine_from_bindings)]
+                          record_affine_from_bindings),
+                         (gm.matcher_with_consumed(gp.ScaleAndShift),
+                          record_scale_and_shift_from_bindings)]
 
   # Patterns return bindings to raw tensors, so we need to be able to map back
   # to variables from the tensors those variables reference.
@@ -331,13 +378,13 @@ def register_subgraph_layers(layer_collection,
             ('Tried to register {} as generic without knowledge of batch_size. '
              'You can pass batch_size in to fix this error. But please note, '
              + generic_bad_string).format(variable))
-      warnings.warn(('Registering {} as generic because graph scanner '
-                     'couldn\'t match a pattern for it. This can sometimes '
-                     'be caused by the variable not being present in the graph '
-                     'terminating at the registered losses. You might need to '
-                     'pass an explicit list of parameters to tell the system '
-                     'what parameters are actually in your model. Note that '
-                     + generic_bad_string).format(variable))
+      logging.warn(('Registering {} as generic because graph scanner '
+                    'couldn\'t match a pattern for it. This can sometimes '
+                    'be caused by the variable not being present in the '
+                    'graph terminating at the registered losses. You might '
+                    'need to pass an explicit list of parameters to tell '
+                    'the system what parameters are actually in your model. '
+                    'Note that ' + generic_bad_string).format(variable))
       layer_collection.register_generic(variable, batch_size, reuse=reuse)
 
 
@@ -562,6 +609,18 @@ def register_records(layer_collection,
           layer_collection.register_conv2d(params, strides, padding, inputs,
                                            outputs, data_format=data_format,
                                            reuse=reuse)
+
+    elif record_type is RecordType.scale_and_shift:
+
+      if len(record_list) > 1:
+        raise ValueError('Multi-use registrations currently not supported for '
+                         'scale & shift operations.')
+      record = record_list[0]
+      inputs = record.data['inputs']
+      outputs = record.data['outputs']
+
+      layer_collection.register_scale_and_shift(params, inputs, outputs)
+
     else:
       assert False, 'Invalid record type {}'.format(record_type)
 
