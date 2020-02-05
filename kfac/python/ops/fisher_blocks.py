@@ -695,17 +695,21 @@ class ScaleAndShiftFullFB(InputOutputMultiTower, FullFB):
   shrink as 1/batch_size.
   """
 
-  def __init__(self, layer_collection, broadcast_dim, has_shift=True):
+  def __init__(self, layer_collection, broadcast_dims_scale,
+               broadcast_dims_shift=None, has_shift=True):
     """Creates a ScaleAndShiftFullFB block.
 
     Args:
       layer_collection: The LayerCollection object which owns this block.
-      broadcast_dim: The dimension of the input up to which broadcasting
-        takes place when the scale and shift are multiplied/added.
+      broadcast_dims_scale: A list of dimension indices that are broadcast
+        along during the scale operation. Does not include batch dimension.
+      broadcast_dims_shift: A list of dimension indices that are broadcast
+        along during the shift operation. Does not include batch dimension.
       has_shift: bool. If True, estimates Fisher with respect to a shift
         parameter as well the scale parameter (which is always included).
     """
-    self._broadcast_dim = broadcast_dim
+    self._broadcast_dims_scale = broadcast_dims_scale
+    self._broadcast_dims_shift = broadcast_dims_shift
     self._has_shift = has_shift
 
     super(ScaleAndShiftFullFB, self).__init__(layer_collection)
@@ -716,7 +720,8 @@ class ScaleAndShiftFullFB(InputOutputMultiTower, FullFB):
 
     self._factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ScaleAndShiftFullFactor,
-        (inputs, grads_list, self._broadcast_dim, self._has_shift))
+        (inputs, grads_list, self._broadcast_dims_scale,
+         self._broadcast_dims_shift, self._has_shift))
 
     self._damping_func = _package_func(lambda: damping, (damping,))
 
@@ -730,17 +735,21 @@ class ScaleAndShiftDiagonalFB(InputOutputMultiTower, DiagonalFB):
   shrink as 1/batch_size.
   """
 
-  def __init__(self, layer_collection, broadcast_dim, has_shift=True):
+  def __init__(self, layer_collection, broadcast_dims_scale,
+               broadcast_dims_shift=None, has_shift=True):
     """Creates a ScaleAndShiftDiagonalFB block.
 
     Args:
       layer_collection: The LayerCollection object which owns this block.
-      broadcast_dim: The dimension of the input up to which broadcasting
-        takes place when the scale and shift are multiplied/added.
+      broadcast_dims_scale: A list of dimension indices that are broadcast
+        along during the scale operation. Does not include batch dimension.
+      broadcast_dims_shift: A list of dimension indices that are broadcast
+        along during the shift operation. Does not include batch dimension.
       has_shift: bool. If True, estimates Fisher with respect to a shift
         parameter as well the scale parameter (which is always included).
     """
-    self._broadcast_dim = broadcast_dim
+    self._broadcast_dims_scale = broadcast_dims_scale
+    self._broadcast_dims_shift = broadcast_dims_shift
     self._has_shift = has_shift
 
     super(ScaleAndShiftDiagonalFB, self).__init__(layer_collection)
@@ -751,7 +760,8 @@ class ScaleAndShiftDiagonalFB(InputOutputMultiTower, DiagonalFB):
 
     self._factor = self._layer_collection.make_or_get_factor(
         fisher_factors.ScaleAndShiftDiagonalFactor,
-        (inputs, grads_list, self._broadcast_dim, self._has_shift))
+        (inputs, grads_list, self._broadcast_dims_scale,
+         self._broadcast_dims_shift, self._has_shift))
 
     self._damping_func = _package_func(lambda: damping, (damping,))
 

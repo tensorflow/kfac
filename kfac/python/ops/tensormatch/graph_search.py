@@ -31,6 +31,7 @@ class RecordType(enum.Enum):
   fully_connected = 1
   conv2d = 2
   scale_and_shift = 3
+  batch_norm = 4
 
 
 class AmbiguousRegistrationError(Exception):
@@ -175,6 +176,45 @@ def record_scale_and_shift_from_bindings(bindings, consumed_tensors,
         data=record_data)
 
 
+def record_batch_norm_from_bindings(bindings, consumed_tensors,
+                                    tensors_to_variables):
+  """Construct a MatchRecord for the given BatchNorm pattern bindings.
+
+  Args:
+    bindings: A dict representing a matched pattern. Strings representing
+      components of the pattern are mapped to the matched Tensors.
+    consumed_tensors: A set of all tensors consumed by the matched pattern.
+      This should be a superset of the values of the bindings dict.
+    tensors_to_variables: A dict mapping Tensors to the variables referencing
+      them.
+
+  Returns:
+    A `MatchRecord` containing the information necessary to register the layer.
+  """
+  if 'offset' in bindings:
+    offset = tensors_to_variables.get(bindings['offset'])
+  else:
+    offset = None
+  scale = tensors_to_variables.get(bindings['scale'], None)
+
+  inputs = bindings['in']
+  outputs = bindings['out']
+
+  if scale is not None and offset is not None:
+    params = (scale, offset)
+  else:
+    params = scale
+
+  if params is not None:
+    record_data = dict(inputs=inputs, outputs=outputs)
+
+    return MatchRecord(
+        record_type=RecordType.batch_norm,
+        params=params,
+        tensor_set=consumed_tensors,
+        data=record_data)
+
+
 def register_layers(layer_collection, varlist, batch_size=None):
   """Walk the graph and register all layers to layer_collection.
 
@@ -294,7 +334,11 @@ def register_subgraph_layers(layer_collection,
   match_register_list = [(gm.matcher_with_consumed(gp.Affine),
                           record_affine_from_bindings),
                          (gm.matcher_with_consumed(gp.ScaleAndShift),
-                          record_scale_and_shift_from_bindings)]
+                          record_scale_and_shift_from_bindings),
+                         (gm.matcher_with_consumed(gp.BatchNorm),
+                          record_batch_norm_from_bindings),
+                         (gm.matcher_with_consumed(gp.FusedBatchNormOutput),
+                          record_batch_norm_from_bindings)]
 
   # Patterns return bindings to raw tensors, so we need to be able to map back
   # to variables from the tensors those variables reference.
@@ -521,6 +565,8 @@ def register_records(layer_collection,
     ValueError: If record_list_dict contains multiple record types for a single
       set of variables, or if there are multiple records for a set of variables
       of a type that doesn't support shared parameters.
+    AmbiguousRegistrationError: If a batch norm layer registration is required
+      but batch_size is not passed.
   """
 
   mixed_record_type_errors = []
@@ -558,11 +604,16 @@ def register_records(layer_collection,
 
     if record_type is RecordType.fully_connected:
       if len(record_list) > 1:
+        logging.info(
+            'Registering as multi fully-connected: {}'.format(params))
+
         inputs = tuple(record.data['inputs'] for record in record_list)
         outputs = tuple(record.data['outputs'] for record in record_list)
         layer_collection.register_fully_connected_multi(
             params, inputs, outputs, reuse=reuse)
       else:
+        logging.info('Registering as fully-connected: {}'.format(params))
+
         record = record_list[0]
         inputs = record.data['inputs']
         outputs = record.data['outputs']
@@ -575,6 +626,8 @@ def register_records(layer_collection,
 
     elif record_type is RecordType.conv2d:
       if len(record_list) > 1:
+        logging.info('Registering as multi conv2d: {}'.format(params))
+
         inputs = tuple(record.data['inputs'] for record in record_list)
         outputs = tuple(record.data['outputs'] for record in record_list)
         strides = record_list[0].data['strides']
@@ -589,6 +642,8 @@ def register_records(layer_collection,
             data_format=data_format,
             reuse=reuse)
       else:
+        logging.info('Registering as conv2d: {}'.format(params))
+
         record = record_list[0]
         inputs = record.data['inputs']
         outputs = record.data['outputs']
@@ -611,6 +666,7 @@ def register_records(layer_collection,
                                            reuse=reuse)
 
     elif record_type is RecordType.scale_and_shift:
+      logging.info('Registering as scale (& shift): {}'.format(params))
 
       if len(record_list) > 1:
         raise ValueError('Multi-use registrations currently not supported for '
@@ -619,7 +675,31 @@ def register_records(layer_collection,
       inputs = record.data['inputs']
       outputs = record.data['outputs']
 
-      layer_collection.register_scale_and_shift(params, inputs, outputs)
+      layer_collection.register_scale_and_shift(params, inputs, outputs,
+                                                reuse=reuse)
+
+    elif record_type is RecordType.batch_norm:
+      logging.info('Registering as batch norm: {}'.format(params))
+
+      if batch_size is None:
+        raise AmbiguousRegistrationError(
+            'Tried to register a batch norm layer (as generic) without '
+            'knowledge of batch_size. You can pass batch_size in to fix this '
+            'error.')
+
+      # This is a slight hack. Ideally register_generic would work with lists
+      # of params like it used to before we switched to the "unflattened" cov
+      # representation so we wouldn't need to detect the approximation type.
+      will_use_diag = (
+          layer_collection._get_linked_approx(params) == 'diagonal'  # pylint: disable=protected-access
+          or (layer_collection.default_generic_approximation == 'diagonal'
+              and layer_collection._get_linked_approx(params) is None)  # pylint: disable=protected-access
+          )
+      if will_use_diag:
+        layer_collection.register_generic(params[0], batch_size, reuse=reuse)
+        layer_collection.register_generic(params[1], batch_size, reuse=reuse)
+      else:
+        layer_collection.register_generic(params, batch_size, reuse=reuse)
 
     else:
       assert False, 'Invalid record type {}'.format(record_type)

@@ -1336,7 +1336,8 @@ class ScaleAndShiftFactor(FisherFactor):
   def __init__(self,
                inputs,
                outputs_grads,
-               broadcast_dim,
+               broadcast_dims_scale,
+               broadcast_dims_shift=None,
                has_shift=True,
                approx="full"):
 
@@ -1344,24 +1345,34 @@ class ScaleAndShiftFactor(FisherFactor):
 
     self._inputs = inputs
     self._outputs_grads = outputs_grads
-    self._broadcast_dim = broadcast_dim
+    self._broadcast_dims_scale = broadcast_dims_scale
+    self._broadcast_dims_shift = broadcast_dims_shift
     self._has_shift = has_shift
     self._approx = approx
+
+    assert not has_shift or broadcast_dims_shift is not None
 
     super(ScaleAndShiftFactor, self).__init__()
 
   @property
   def _var_scope(self):
     return "ff_scaleshift_" + scope_string_from_params(
-        [self._inputs, self._outputs_grads, self._broadcast_dim,
-         self._has_shift, self._approx])
+        [self._inputs, self._outputs_grads, self._broadcast_dims_scale,
+         self._broadcast_dims_shift, self._has_shift, self._approx])
 
   @property
   def _cov_shape(self):
-    size = np.prod(self._inputs[0].shape[self._broadcast_dim:])
+    size = np.prod([
+        self._inputs[0].shape[i]
+        for i in range(1, len(self._inputs[0].shape))
+        if i not in self._broadcast_dims_scale])
 
     if self._has_shift:
-      size *= 2
+      size_shift = np.prod([
+          self._outputs_grads[0][0].shape[i]
+          for i in range(1, len(self._outputs_grads[0][0].shape))
+          if i not in self._broadcast_dims_shift])
+      size += size_shift
 
     if self._approx == "full":
       return (size, size)
@@ -1401,14 +1412,14 @@ class ScaleAndShiftFactor(FisherFactor):
     # product of the inputs and the output gradients, summed across the
     # dimensions that get broadcasted.
     scale_grads = tf.reduce_sum(inputs * outputs_grad,
-                                axis=list(range(1, self._broadcast_dim)))
+                                axis=self._broadcast_dims_scale)
     scale_grads_flat = tf.reshape(scale_grads, [batch_size, -1])
 
     if self._has_shift:
       # The formula for the gradient of the shift param is just the output
       # gradients, summed across the dimensions that get broadcasted.
       shift_grads = tf.reduce_sum(outputs_grad,
-                                  axis=list(range(1, self._broadcast_dim)))
+                                  axis=self._broadcast_dims_shift)
       shift_grads_flat = tf.reshape(shift_grads, [batch_size, -1])
 
       params_grads_flat = tf.concat([scale_grads_flat, shift_grads_flat],
@@ -1433,14 +1444,17 @@ class ScaleAndShiftFullFactor(ScaleAndShiftFactor, DenseSquareMatrixFactor):
   def __init__(self,
                inputs,
                outputs_grads,
-               broadcast_dim,
+               broadcast_dims_scale,
+               broadcast_dims_shift=None,
                has_shift=True):
 
-    super(ScaleAndShiftFullFactor, self).__init__(inputs,
-                                                  outputs_grads,
-                                                  broadcast_dim,
-                                                  has_shift=has_shift,
-                                                  approx="full")
+    super(ScaleAndShiftFullFactor, self).__init__(
+        inputs,
+        outputs_grads,
+        broadcast_dims_scale,
+        broadcast_dims_shift=broadcast_dims_shift,
+        has_shift=has_shift,
+        approx="full")
 
 
 class ScaleAndShiftDiagonalFactor(ScaleAndShiftFactor, DiagonalFactor):
@@ -1448,14 +1462,17 @@ class ScaleAndShiftDiagonalFactor(ScaleAndShiftFactor, DiagonalFactor):
   def __init__(self,
                inputs,
                outputs_grads,
-               broadcast_dim,
+               broadcast_dims_scale,
+               broadcast_dims_shift=None,
                has_shift=True):
 
-    super(ScaleAndShiftDiagonalFactor, self).__init__(inputs,
-                                                      outputs_grads,
-                                                      broadcast_dim,
-                                                      has_shift=has_shift,
-                                                      approx="diagonal")
+    super(ScaleAndShiftDiagonalFactor, self).__init__(
+        inputs,
+        outputs_grads,
+        broadcast_dims_scale,
+        broadcast_dims_shift=broadcast_dims_shift,
+        has_shift=has_shift,
+        approx="diagonal")
 
 
 class ConvDiagonalFactor(DiagonalFactor):
