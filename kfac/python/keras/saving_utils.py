@@ -20,7 +20,7 @@ from __future__ import print_function
 
 import json
 from absl import logging
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.keras.saving import hdf5_format
 from kfac.python.keras import optimizers

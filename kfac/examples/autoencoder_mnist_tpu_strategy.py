@@ -34,7 +34,7 @@ from __future__ import print_function
 # Dependency imports
 from absl import flags
 import kfac
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.examples import autoencoder_mnist
 from kfac.examples import mnist
@@ -222,4 +222,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.app.run(main)

@@ -72,7 +72,7 @@ import math
 
 # Dependency imports
 import six
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.util import nest
 from kfac.python.ops import fisher_blocks as fb

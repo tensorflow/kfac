@@ -32,7 +32,7 @@ from __future__ import print_function
 # Dependency imports
 from absl import flags
 import kfac
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from tensorflow.contrib import tpu as contrib_tpu
 
 from kfac.examples import classifier_mnist
@@ -243,4 +243,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.app.run(main)

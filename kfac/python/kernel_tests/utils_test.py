@@ -20,7 +20,7 @@ from __future__ import print_function
 
 # Dependency imports
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from kfac.python.ops import utils
 
 
@@ -459,4 +459,5 @@ class AccumulatorVariableTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.test.main()

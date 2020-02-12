@@ -20,7 +20,7 @@ from __future__ import print_function
 
 import threading
 # Dependency imports
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.python.ops import optimizer
 

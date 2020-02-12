@@ -20,7 +20,7 @@ from __future__ import print_function
 
 # Dependency imports
 import six
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.framework import ops as tf_ops
 from tensorflow.python.ops import resource_variable_ops

@@ -28,7 +28,7 @@ from __future__ import division
 from __future__ import print_function
 
 # Dependency imports
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 def _extract_data(tensor_list, indices):

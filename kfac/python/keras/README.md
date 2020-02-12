@@ -26,7 +26,7 @@ will automatically register the model layers and loss so K-FAC can compute the
 fisher approximations.
 
 ```python
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import kfac
 
 # Build Keras Model (can use functional or sequential)
@@ -116,7 +116,7 @@ The original [KFAC paper][paper] outlines how the optimizer can automatically
 adjust the learning rate, momentum, and damping. You can use it as follows:
 
 ```python
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from tensorflow_kfac.keras import kfac_optimizer
 
 # tf.data.Dataset dataset

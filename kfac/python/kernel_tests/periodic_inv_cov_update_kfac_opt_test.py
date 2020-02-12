@@ -20,7 +20,7 @@ from __future__ import print_function
 
 # Dependency imports
 import sonnet as snt
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.python.ops import layer_collection
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt
@@ -80,4 +80,5 @@ class PeriodicInvCovUpdateKfacOptTest(tf.test.TestCase):
 
 
 if __name__ == "__main__":
+  tf.disable_v2_behavior()
   tf.test.main()

@@ -21,7 +21,7 @@ from __future__ import print_function
 import json
 from absl.testing import parameterized
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.keras import backend
 from tensorflow.python.util import serialization
@@ -967,4 +967,5 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.test.main()

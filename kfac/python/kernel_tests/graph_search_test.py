@@ -20,7 +20,7 @@ from __future__ import print_function
 
 import collections
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.python.ops import fisher_blocks as fb
 from kfac.python.ops import layer_collection as lc
@@ -860,4 +860,5 @@ class GraphSearchTestCase(tf.test.TestCase):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.test.main()

@@ -28,7 +28,7 @@ import math
 from absl import flags
 import kfac
 import sonnet as snt
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.examples import mnist
 from kfac.python.ops.kfac_utils import data_reader
@@ -544,4 +544,5 @@ def main(_):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.app.run(main)

@@ -21,7 +21,7 @@ from __future__ import print_function
 import itertools
 
 # Dependency imports
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.util import nest
 from kfac.python.ops import utils as utils

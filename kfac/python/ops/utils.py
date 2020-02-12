@@ -21,7 +21,7 @@ from __future__ import print_function
 import collections
 # Dependency imports
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from tensorflow.contrib import tpu as contrib_tpu
 
 from tensorflow.contrib.tpu.python.ops import tpu_ops

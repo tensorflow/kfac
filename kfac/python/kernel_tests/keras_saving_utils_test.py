@@ -24,7 +24,7 @@ from __future__ import print_function
 import os
 import tempfile
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.framework import test_util
 from kfac.python.keras import optimizers
@@ -303,4 +303,5 @@ class SavingUtilsTest(tf.test.TestCase):
       os.remove(fname)
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.test.main()

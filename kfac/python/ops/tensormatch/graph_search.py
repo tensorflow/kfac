@@ -16,7 +16,7 @@
 import collections
 from absl import logging
 import enum
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 from tensorflow.python.framework import ops as tf_ops

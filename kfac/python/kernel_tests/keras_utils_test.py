@@ -20,7 +20,7 @@ from __future__ import print_function
 
 from absl.testing import parameterized
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from kfac.python.keras import utils
 from kfac.python.ops import fisher_blocks
@@ -591,4 +591,5 @@ class GetLossFnTest(tf.test.TestCase, parameterized.TestCase):
 
 
 if __name__ == '__main__':
+  tf.disable_v2_behavior()
   tf.test.main()
