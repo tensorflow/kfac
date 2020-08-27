@@ -382,6 +382,8 @@ class NormalMeanNegativeLogProbLoss(DistributionNegativeLogProbLoss,
   """
 
   def __init__(self, mean, var=0.5, targets=None, seed=None):
+    assert isinstance(var, float)  # variance must be a constant float
+
     self._mean = mean
     self._var = var
     self._targets = targets

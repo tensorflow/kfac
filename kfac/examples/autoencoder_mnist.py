@@ -61,7 +61,7 @@ flags.DEFINE_integer('num_burnin_steps', 5, 'Number of steps at the '
 flags.DEFINE_integer('seed', 12345, 'Random seed')
 
 flags.DEFINE_float('learning_rate', 3e-3,
-                   'Learning rate to use when adaptation="off".')
+                   'Learning rate to use when lrmu_adaptation="off".')
 
 flags.DEFINE_float('momentum', 0.9,
                    'Momentum decay value to use when '
@@ -127,11 +127,14 @@ flags.DEFINE_boolean('auto_register_layers', True,
 
 flags.DEFINE_boolean('use_keras_model', False,
                      'If True, we use a Keras version of the autoencoder '
-                     'model.')
+                     'model. Only works when auto_register_layers=True.')
 
 flags.DEFINE_boolean('use_sequential_for_keras', True,
                      'If True, we construct the Keras model using the '
                      'Sequential class.')
+
+flags.DEFINE_boolean('use_control_flow_v2', False, 'If True, we use Control '
+                     'Flow V2. Defaults to False.')
 
 
 FLAGS = flags.FLAGS
@@ -428,7 +431,6 @@ def compute_squared_error(logits, targets):
 
 def compute_loss(logits=None,
                  labels=None,
-                 layer_collection=None,
                  return_error=False,
                  model=None):
   """Compute loss value."""
@@ -442,11 +444,6 @@ def compute_loss(logits=None,
                                                         labels=labels)
   loss = tf.reduce_sum(tf.reduce_mean(loss_matrix, axis=0))
   regularized_loss = loss + total_regularization_loss
-
-  if layer_collection is not None:
-    # Make sure never to confuse this with register_softmax_cross_entropy_loss!
-    layer_collection.register_sigmoid_cross_entropy_loss(logits,
-                                                         seed=FLAGS.seed + 1)
 
   if return_error:
     squared_error = compute_squared_error(logits, labels)
@@ -514,11 +511,11 @@ def construct_train_quants():
     batch_size_schedule = _get_batch_size_schedule(num_examples)
     batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
 
-    train_minibatch = cached_reader(batch_size)
+    minibatch = cached_reader(batch_size)
+    features, _ = minibatch
 
     if FLAGS.auto_register_layers:
       if FLAGS.use_keras_model:
-        features, _ = train_minibatch
         training_model = get_keras_autoencoder(tensor=features)
       else:
         training_model = AutoEncoder(784)
@@ -527,38 +524,37 @@ def construct_train_quants():
 
     layer_collection = kfac.LayerCollection()
 
-    def loss_fn(minibatch, layer_collection=None, return_error=False):
-      features, labels = minibatch
-      del labels
+    def loss_fn(minibatch, logits=None, return_error=False):
+      features, _ = minibatch
+      if logits is None:
+        logits = training_model(features)
+
+      return compute_loss(
+          logits=logits,
+          labels=features,
+          return_error=return_error,
+          model=training_model)
+
+    if FLAGS.use_keras_model:
+      logits = training_model.output
+    else:
       if FLAGS.auto_register_layers:
         logits = training_model(features)
       else:
         logits = training_model(features, layer_collection=layer_collection)
 
-      return compute_loss(
-          logits=logits,
-          labels=features,
-          layer_collection=layer_collection,
-          return_error=return_error,
-          model=training_model)
+    (batch_loss, batch_error) = loss_fn(
+        minibatch, logits=logits, return_error=True)
 
-    if FLAGS.use_keras_model:
-      (batch_loss, batch_error) = compute_loss(
-          logits=training_model.output,
-          labels=features,
-          layer_collection=layer_collection,
-          return_error=True,
-          model=training_model)
-    else:
-      (batch_loss, batch_error) = loss_fn(
-          train_minibatch, layer_collection=layer_collection, return_error=True)
-
+    # Make sure never to confuse this with register_softmax_cross_entropy_loss!
+    layer_collection.register_sigmoid_cross_entropy_loss(logits,
+                                                         seed=FLAGS.seed + 1)
     if FLAGS.auto_register_layers:
       layer_collection.auto_register_layers()
 
     # Make training op
     train_op, opt = make_train_op(
-        train_minibatch,
+        minibatch,
         batch_size,
         batch_loss,
         layer_collection,
@@ -571,8 +567,16 @@ def construct_train_quants():
 def main(_):
 
   # If using update_damping_immediately resource variables must be enabled.
+  # Would recommend always enabling them anyway.
   if FLAGS.update_damping_immediately:
     tf.enable_resource_variables()
+
+  if FLAGS.use_control_flow_v2:
+    tf.enable_control_flow_v2()
+
+  if not FLAGS.auto_register_layers and FLAGS.use_keras_model:
+    raise ValueError('Require auto_register_layers=True when using Keras '
+                     'model.')
 
   tf.set_random_seed(FLAGS.seed)
   (train_op, opt, batch_loss, batch_error, batch_size_schedule,

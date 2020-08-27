@@ -22,10 +22,9 @@ from __future__ import print_function
 import six
 import tensorflow.compat.v1 as tf
 
-from tensorflow.python.framework import ops as tf_ops
-from tensorflow.python.ops import resource_variable_ops
-
 from kfac.python.ops import utils
+from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.types import core
 
 
 def is_op(node):
@@ -33,9 +32,8 @@ def is_op(node):
 
 
 def is_tensor(node):
-  # return (isinstance(node, (tf.Tensor, tf.Variable))
-  #         or resource_variable_ops.is_resource_variable(node))
-  return tf_ops.is_dense_tensor_like(node)
+  # TODO(b/154650521): Use tf.Tensor instead of core.Tensor.
+  return isinstance(node, core.Tensor)
 
 
 def is_var(node):

@@ -36,8 +36,8 @@ POSDEF_EIG_METHOD = "self_adjoint"
 _TF_REPLICATOR = None
 
 
-def smart_assign(variable, value, assign_fn=tf.compat.v1.assign,
-                 force_cast=False):
+def smart_assign(variable, value, assign_fn=tf.assign,
+                 force_cast=False, force_sync=True):
   """Calls assign_fn on variable and value in a cross-replica context.
 
   When this function is called in a per-replica context, it will enter a cross-
@@ -65,6 +65,9 @@ def smart_assign(variable, value, assign_fn=tf.compat.v1.assign,
       or tf.assign_sub.
     force_cast: Boolean. If True we cast the `value` to the dtype of `variable`
       when they don't match. (Default: False)
+    force_sync: Boolean. If True and using MirroredStrategy in a replica
+      context, take the mean of value over all replicas to force the value to be
+      syncronized before performing the assignment.
 
   Returns:
     tf.Tensor that contains the result of assign_fn(variable, value) called in
@@ -77,10 +80,80 @@ def smart_assign(variable, value, assign_fn=tf.compat.v1.assign,
     return assign_fn(variable, value)
 
   def merge_fn(distribution, variable, value):
+    strategy = tf.distribute.get_strategy()
+    if isinstance(strategy, tf.distribute.MirroredStrategy) and force_sync:
+      value = strategy.reduce(tf.distribute.ReduceOp.MEAN, value)
     return distribution.extended.update(variable, assign_fn, args=(value,))
 
   return tf.distribute.get_replica_context().merge_call(
       merge_fn, args=(variable, value))
+
+
+def smart_cond(predicate, true_fn, false_fn, name=None):
+  """Creates ops for conditionally executing one of two functions.
+
+  If MirroredStrategy is not used or outside of a MirroredStrategy replica
+  context, this is identical to tf.cond.
+  tf.cond does not support using functions which involve synchronization calls
+  inside a MirroredStrategy replica context. Instead, work around this by safely
+  evaluating the conditional across replicas and then evaluate either true_fn or
+  false_fn back in a replica context.
+
+  Note: this is only required if true_fn and/or false_fn involve a
+  synchronization across replicas (e.g. via a reduction to evaluate the
+  cross-replica mean).
+
+  Limitations: with MirroredStrategy, true_fn and false_fn are executed via
+  control_dependencies are a constant tensor is returned instead of the actual
+  return values of true_fn and false_fn. This is due to the requirement that
+  functions executed using DistributionStrategy.call_for_each_replica return a
+  tensor rather than an operation.
+
+  Args:
+    predicate: boolean operation which determines whether to execute true_fn or
+      false_fn.
+    true_fn: function to execute if predicate is true.
+    false_fn: function to execute if predicate is false.
+    name: name to assign to the tf.cond operation.
+
+  Returns:
+    If not using MirroredStrategy or outside of a MirroredStrategy replica
+    context, the result from true_fn or false_fn, and otherwise a constant
+    tensor.
+  """
+  if (tf.distribute.has_strategy() and tf.distribute.get_replica_context()):
+    strategy = tf.distribute.get_strategy()
+  else:
+    strategy = None
+  if not isinstance(strategy, tf.distribute.MirroredStrategy):
+    return tf.cond(predicate, true_fn, false_fn, name)
+  else:
+    # Conditionals with functions which execute synchronization calls are not
+    # well supported with Distribution Strategy. Instead follow the scheme
+    # suggested in https://github.com/tensorflow/tensorflow/issues/27716:
+    # 1. Execute the conditional in a cross-replica context.
+    # 2. The conditional functions then return to a replica-context before
+    # executing the original conditional functions.
+    def true_fn_per_replica():
+      # call_for_each_replica requires a tensor to be returned. This is not true
+      # for all functions (which, e.g., might return an op or tf.group) so
+      # instead execute the ops as control dependency and return a constant
+      # tensor.
+      with tf.control_dependencies([true_fn()]):
+        return tf.constant(0.0)
+    def true_fn_cross_replica():
+      strategy = tf.distribute.get_strategy()
+      return strategy.extended.call_for_each_replica(true_fn_per_replica)
+    def false_fn_per_replica():
+      with tf.control_dependencies([false_fn()]):
+        return tf.constant(0.0)
+    def false_fn_cross_replica():
+      strategy = tf.distribute.get_strategy()
+      return strategy.extended.call_for_each_replica(false_fn_per_replica)
+    def cond(distribution):
+      del distribution
+      return tf.cond(predicate, true_fn_cross_replica, false_fn_cross_replica, name)
+    return tf.distribute.get_replica_context().merge_call(cond)
 
 
 def set_global_constants(posdef_inv_method=None, tf_replicator=None):
@@ -341,7 +414,7 @@ class SubGraph(object):
 
     consumers = set()
     if resource_variable_ops.is_resource_variable(var):
-      if tf.control_flow_v2_enabled():
+      if tf.control_flow_v2_enabled() and hasattr(self._graph, "captures"):
         # TODO(b/143690035): Note that the "captures" property relies on an API
         # which might change.
         captures = self._graph.captures
@@ -365,9 +438,18 @@ class SubGraph(object):
     return filtered_list
 
 
+def preferred_int_dtype():
+  # tf.int32 doesn't work properly on GPUs, and tf.int64 isn't recommended on
+  # TPUs. Hence this function.
+  if is_tpu_replicated():
+    return tf.int32
+  else:
+    return tf.int64
+
+
 def generate_random_signs(shape, dtype=tf.float32):
   """Generate a random tensor with {-1, +1} entries."""
-  ints = tf.random_uniform(shape, maxval=2, dtype=tf.int32)
+  ints = tf.random_uniform(shape, maxval=2, dtype=preferred_int_dtype())
   return 2 * tf.cast(ints, dtype=dtype) - 1
 
 
@@ -918,14 +1000,14 @@ class AccumulatorVariable(object):
       self._counter = tf.get_variable(
           "counter",
           shape=(),
-          dtype=tf.int32,
+          dtype=tf.float32,
           initializer=tf.zeros_initializer(),
           trainable=False,
           use_resource=True)
 
   def accumulate(self, value):
     """Adds `value` to the accumulated data."""
-    inc_counter_op = smart_assign(self._counter, 1, assign_fn=tf.assign_add)
+    inc_counter_op = smart_assign(self._counter, 1.0, assign_fn=tf.assign_add)
     acc_op = smart_assign(self._acc_var, value, assign_fn=tf.assign_add)
     return tf.group(inc_counter_op, acc_op)
 
@@ -946,7 +1028,7 @@ class AccumulatorVariable(object):
     var_reset_op = smart_assign(
         self._acc_var, tf.zeros(self._acc_var.shape, dtype=self._acc_var.dtype))
     counter_reset_op = smart_assign(self._counter,
-                                    tf.constant(0, dtype=tf.int32))
+                                    tf.constant(0.0, dtype=tf.float32))
 
     return tf.group(var_reset_op, counter_reset_op)
 
@@ -1185,7 +1267,7 @@ class MovingAverageVariable(object):
         be tf.zeros_initializer() unless you know what you are doing.
         (Default: tf.zeros_initializer())
       normalize_value: bool. If True we normalize the value property by the
-        total weight (which will be subject to decay). (Default: False)
+        total weight (which will be subject to decay). (Default: True)
     """
     self._normalize_value = normalize_value
 

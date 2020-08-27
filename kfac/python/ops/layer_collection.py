@@ -1584,8 +1584,8 @@ class LayerCollection(object):
     Args:
       mean: A tensor defining the mean vector of the distribution. The first
         dimension must be the batch size.
-      var: The variance (must be a scalar).Note that the default value of
-        0.5 corresponds to a standard squared error loss coeff*||target -
+      var: float. The variance of the distribution. Note that the default value
+        of 0.5 corresponds to a standard squared error loss coeff*||target -
         prediction||^2. If you want your squared error loss to be of the form
         0.5*coeff*||target - prediction||^2 you should use var=1.0.
         (Default: 0.5)

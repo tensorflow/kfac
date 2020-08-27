@@ -39,7 +39,8 @@ class LinearOperatorExtras(object):  # pylint: disable=missing-docstring
 
       self_dim = -2 if adjoint else -1
       arg_dim = -1 if adjoint_arg else -2
-      self.shape[self_dim].assert_is_compatible_with(x.get_shape()[arg_dim])
+      tf.TensorShape(self.shape[self_dim]).assert_is_compatible_with(
+          x.get_shape()[arg_dim])
 
       return self._matmul(x, adjoint=adjoint, adjoint_arg=adjoint_arg)
 
@@ -56,7 +57,8 @@ class LinearOperatorExtras(object):  # pylint: disable=missing-docstring
 
       self_dim = -1 if adjoint else -2
       arg_dim = -2 if adjoint_arg else -1
-      self.shape[self_dim].assert_is_compatible_with(x.get_shape()[arg_dim])
+      tf.TensorShape(self.shape[self_dim]).assert_is_compatible_with(
+          x.get_shape()[arg_dim])
 
       return self._matmul_right(x, adjoint=adjoint, adjoint_arg=adjoint_arg)
 

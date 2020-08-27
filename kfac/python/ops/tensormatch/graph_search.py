@@ -344,7 +344,8 @@ def register_subgraph_layers(layer_collection,
   # to variables from the tensors those variables reference.
   def var_to_tensors(var):
     if resource_variable_ops.is_resource_variable(var):
-      if tf.control_flow_v2_enabled():
+      if tf.control_flow_v2_enabled() and hasattr(layer_collection.graph,
+                                                  'captures'):
         # TODO(b/143690035): Note that the "captures" property relies on an
         # API which might change.
         captures = layer_collection.graph.captures
@@ -422,13 +423,13 @@ def register_subgraph_layers(layer_collection,
             ('Tried to register {} as generic without knowledge of batch_size. '
              'You can pass batch_size in to fix this error. But please note, '
              + generic_bad_string).format(variable))
-      logging.warn(('Registering {} as generic because graph scanner '
-                    'couldn\'t match a pattern for it. This can sometimes '
-                    'be caused by the variable not being present in the '
-                    'graph terminating at the registered losses. You might '
-                    'need to pass an explicit list of parameters to tell '
-                    'the system what parameters are actually in your model. '
-                    'Note that ' + generic_bad_string).format(variable))
+      logging.warning(('Registering {} as generic because graph scanner '
+                       'couldn\'t match a pattern for it. This can sometimes '
+                       'be caused by the variable not being present in the '
+                       'graph terminating at the registered losses. You might '
+                       'need to pass an explicit list of parameters to tell '
+                       'the system what parameters are actually in your model. '
+                       'Note that ' + generic_bad_string).format(variable))
       layer_collection.register_generic(variable, batch_size, reuse=reuse)
 
 

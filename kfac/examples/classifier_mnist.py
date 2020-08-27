@@ -41,11 +41,14 @@ _POOL = 'MAX'  # can also be 'AVG'
 
 
 flags.DEFINE_integer('train_steps', 10000, 'Number of training steps.')
+
 flags.DEFINE_integer('inverse_update_period', 5,
                      '# of steps between computing inverse of Fisher factor '
                      'matrices.')
+
 flags.DEFINE_integer('cov_update_period', 1,
                      '# of steps between computing covaraiance matrices.')
+
 flags.DEFINE_integer('damping_adaptation_interval', 5,
                      '# of steps between updating the damping parameter.')
 
@@ -53,12 +56,16 @@ flags.DEFINE_integer('num_burnin_steps', 5, 'Number of steps the at the '
                      'start of training where the optimizer will only perform '
                      'cov updates. Will not work on CrossShardOptimizer. See '
                      'PeriodicInvCovUpdateKfacOpt for details.')
+
 flags.DEFINE_integer('seed', 12345, 'Random seed')
+
 flags.DEFINE_float('learning_rate', 3e-3,
-                   'Learning rate to use when adaptation="off".')
+                   'Learning rate to use when lrmu_adaptation="off".')
+
 flags.DEFINE_float('momentum', 0.9,
                    'Momentum decay value to use when '
                    'lrmu_adaptation="off" or "only_lr".')
+
 flags.DEFINE_float('damping', 1e-2, 'The fixed damping value to use. This is '
                    'ignored if adapt_damping is True.')
 
@@ -85,7 +92,6 @@ flags.DEFINE_string('lrmu_adaptation', 'on',
                     'be set to "off" and "only_lr", which turns '
                     'it off, or uses a version where the momentum parameter '
                     'is fixed (resp.).')
-
 
 flags.DEFINE_boolean('use_alt_data_reader', True,
                      'If True we use the alternative data reader for MNIST '
@@ -265,7 +271,6 @@ def make_train_op(minibatch,
 
 def compute_loss(logits=None,
                  labels=None,
-                 layer_collection=None,
                  return_error=False,
                  use_regularizer=True):
   """Compute loss value."""
@@ -279,10 +284,6 @@ def compute_loss(logits=None,
 
     total_loss += tf.cast(total_regularization_loss, dtype=total_loss.dtype)
 
-  if layer_collection is not None:
-    # Make sure never to confuse this with register_sigmoid_cross_entropy_loss!
-    layer_collection.register_softmax_cross_entropy_loss(logits,
-                                                         seed=FLAGS.seed + 1)
   if return_error:
     error = 1.0 - tf.reduce_mean(tf.cast(
         tf.equal(labels, tf.argmax(logits, axis=1, output_type=tf.int32)),
@@ -387,6 +388,7 @@ def construct_train_quants():
     batch_size = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
 
     minibatch = cached_reader(batch_size)
+    features, _ = minibatch
     training_model = Model()
     layer_collection = kfac.LayerCollection()
 
@@ -396,18 +398,23 @@ def construct_train_quants():
     ema = tf.train.ExponentialMovingAverage(FLAGS.polyak_decay,
                                             zero_debias=True)
 
-    def loss_fn(minibatch, layer_collection=None, return_error=False):
+    def loss_fn(minibatch, logits=None, return_error=False):
       features, labels = minibatch
-      logits = training_model(features)
+      if logits is None:
+        logits = training_model(features)
       return compute_loss(
           logits=logits,
           labels=labels,
-          layer_collection=layer_collection,
           return_error=return_error)
 
-    (batch_loss, batch_error) = loss_fn(
-        minibatch, layer_collection=layer_collection, return_error=True)
+    logits = training_model(features)
 
+    (batch_loss, batch_error) = loss_fn(
+        minibatch, logits=logits, return_error=True)
+
+    # Make sure never to confuse this with register_sigmoid_cross_entropy_loss!
+    layer_collection.register_softmax_cross_entropy_loss(logits,
+                                                         seed=FLAGS.seed + 1)
     layer_collection.auto_register_layers()
 
     train_vars = training_model.variables

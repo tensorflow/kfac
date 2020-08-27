@@ -25,6 +25,7 @@ from absl import logging
 import tensorflow.compat.v1 as tf
 
 from kfac.python.ops import optimizer
+from kfac.python.ops import utils
 
 
 class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
@@ -81,9 +82,14 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
         `covariance_update_every` executions of the training op. (Default: 1)
       num_burnin_steps: int. For the first `num_burnin_steps` steps the
         optimizer will only perform cov updates. Note: this doesn't work with
-        CrossShardOptimizer since the custom minimize method implementation
-        will be ignored. (Default: 0)
+        CrossShardOptimizer, since the custom minimize method implementation
+        will be ignored, or with MirroredStrategy, due to behavior of
+        conditional parameter updates with multiple replicas. (Default: 0)
       **kwargs: Arguments to `KfacOptimizer` class.
+
+    Raises:
+      ValueError: if num_burnin_steps is non-zero and MirroredStrategy is being
+      used.
     """
 
     if "cov_ema_decay" in kwargs:
@@ -99,8 +105,14 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
 
     if self._adapt_damping:
       if self._damping_adaptation_interval % self._invert_every != 0:
-        raise ValueError("damping_adaptation_interval must be divisible by "
-                         "invert_every.")
+        logging.warning("WARNING: damping_adaptation_interval isn't divisible "
+                        "by invert_every.")
+
+    if (tf.distribute.has_strategy() and tf.distribute.get_replica_context()):
+      strategy = tf.distribute.get_strategy()
+      if (isinstance(strategy, tf.distribute.MirroredStrategy) and
+          self._num_burnin_steps > 0):
+        raise ValueError("num_burnin_steps must be 0 with MirroredStrategy.")
 
     with tf.variable_scope(self.get_name()):
       self._burnin_counter = tf.get_variable(
@@ -112,7 +124,7 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                loss,
                global_step=None,
                var_list=None,
-               gate_gradients=tf.compat.v1.train.Optimizer.GATE_OP,
+               gate_gradients=tf.train.Optimizer.GATE_OP,
                aggregation_method=None,
                colocate_gradients_with_ops=True,
                name=None,
@@ -149,8 +161,11 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
           grad_loss=grad_loss,
           **kwargs)
 
-    return tf.cond(self._burnin_counter < self._num_burnin_steps,
-                   update_cov_and_burnin_counter, super_minimize)
+    if self._num_burnin_steps == 0:
+      return super_minimize()
+    else:
+      return tf.cond(self._burnin_counter < self._num_burnin_steps,
+                     update_cov_and_burnin_counter, super_minimize)
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
     with tf.control_dependencies([self.kfac_update_ops()]):
@@ -171,20 +186,20 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
     if not self._made_vars_already:
       (cov_update_thunks,
        inv_update_thunks) = self.make_vars_and_create_op_thunks()
-      logging.warn("It looks like apply_gradients() was called before "
-                   "minimze() was called. This is not recommended, and you "
-                   "should avoid using optimizer wrappers like "
-                   "CrossShardOptimizer with K-FAC that try to bypass the "
-                   "minimize() method. The burn-in feature won't work when "
-                   "the class is used this way, for example. And K-FAC does "
-                   "its own cross-relica syncronization.")
+      logging.warning("It looks like apply_gradients() was called before "
+                      "minimze() was called. This is not recommended, and you "
+                      "should avoid using optimizer wrappers like "
+                      "CrossShardOptimizer with K-FAC that try to bypass the "
+                      "minimize() method. The burn-in feature won't work when "
+                      "the class is used this way, for example. And K-FAC does "
+                      "its own cross-relica syncronization.")
     else:
       (_, cov_update_thunks,
        _, inv_update_thunks) = self.create_ops_and_vars_thunks()
 
     should_do_cov_updates = tf.equal(tf.mod(self.counter,
                                             self._cov_update_every), 0)
-    maybe_cov_updates = tf.cond(
+    maybe_cov_updates = utils.smart_cond(
         should_do_cov_updates,
         lambda: tf.group(*(thunk() for thunk in cov_update_thunks)),
         tf.no_op)
@@ -194,9 +209,8 @@ class PeriodicInvCovUpdateKfacOpt(optimizer.KfacOptimizer):
                                   maybe_pre_update_adapt_damping]):
       should_do_inv_updates = tf.equal(tf.mod(self.counter,
                                               self._invert_every), 0)
-      maybe_inv_updates = tf.cond(
+      maybe_inv_updates = utils.smart_cond(
           should_do_inv_updates,
           lambda: tf.group(*(thunk() for thunk in inv_update_thunks)),
           tf.no_op)
       return maybe_inv_updates
-

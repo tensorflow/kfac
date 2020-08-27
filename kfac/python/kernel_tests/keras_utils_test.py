@@ -235,7 +235,7 @@ class GetLayerCollectionTest(parameterized.TestCase, tf.test.TestCase):
       ('_Seperable', layers.SeparableConv2D(13, 5)),
       ('_ChannelsFirst', layers.Conv2D(11, 3, data_format='channels_first')))
   def testInvalidCNNLayers(self, layer):
-    with self.assertRaisesRegex(ValueError, '.*convolutional layer.*'):
+    with self.assertRaises(ValueError):
       model = tf.keras.Sequential([layers.Input(shape=(28, 28, 3)), layer])
       utils.get_layer_collection(model, 'mse')
 
@@ -509,7 +509,8 @@ class GetLossFnTest(tf.test.TestCase, parameterized.TestCase):
     fn_loss = tf.keras.backend.get_value(loss_fn((x, y)))
     fn_loss_w_pred = tf.keras.backend.get_value(
         loss_fn((x, y), prediction=model(x)))
-    self.assertAlmostEqual(model_loss, fn_loss, fn_loss_w_pred)
+    self.assertAlmostEqual(model_loss, fn_loss, places=5)
+    self.assertAlmostEqual(fn_loss, fn_loss_w_pred, places=5)
 
     model.train_on_batch(np.random.random((11, 32, 32, 3)),
                          np.random.random(label_shape))
@@ -520,7 +521,8 @@ class GetLossFnTest(tf.test.TestCase, parameterized.TestCase):
     fn_loss = tf.keras.backend.get_value(loss_fn((x, y)))
     fn_loss_w_pred = tf.keras.backend.get_value(
         loss_fn((x, y), prediction=model(x)))
-    self.assertAlmostEqual(model_loss, fn_loss, fn_loss_w_pred)
+    self.assertAlmostEqual(model_loss, fn_loss, places=5)
+    self.assertAlmostEqual(fn_loss, fn_loss_w_pred, places=5)
 
   @parameterized.parameters('categorical_crossentropy',
                             losses.CategoricalCrossentropy(),

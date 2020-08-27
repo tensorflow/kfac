@@ -404,7 +404,8 @@ def _random_tensor_gather(array, num_ind, name=None):
     total_size = array.shape.as_list()[0]
     if total_size is None:
       total_size = utils.get_shape(array)[0]
-    indices = tf.random_shuffle(tf.range(0, total_size))[:num_ind]
+    indices = tf.random_shuffle(
+        tf.range(0, total_size, dtype=utils.preferred_int_dtype()))[:num_ind]
     return tf.gather(array, indices, axis=0)
 
 
@@ -483,7 +484,7 @@ class FisherFactor(object):
   def check_partial_batch_sizes(self):
     """Ensures partial batch sizes are equal across towers and source."""
 
-    # While it could be okay in principle for the different batch sizes for
+    # While it could be okay in principle to have different batch sizes for
     # different towers, the way the code has been written isn't compatible with
     # this. Basically, the normalizations occur for each tower and then the
     # results are summed across towers and divided by the number of towers.
@@ -1365,13 +1366,15 @@ class ScaleAndShiftFactor(FisherFactor):
     size = np.prod([
         self._inputs[0].shape[i]
         for i in range(1, len(self._inputs[0].shape))
-        if i not in self._broadcast_dims_scale])
+        if i not in self._broadcast_dims_scale],
+                   dtype=np.int64)
 
     if self._has_shift:
       size_shift = np.prod([
           self._outputs_grads[0][0].shape[i]
           for i in range(1, len(self._outputs_grads[0][0].shape))
-          if i not in self._broadcast_dims_shift])
+          if i not in self._broadcast_dims_shift],
+                           dtype=np.int64)
       size += size_shift
 
     if self._approx == "full":
@@ -1693,8 +1696,10 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
   Estimates E[ a a^T ] where a is the inputs to a convolutional layer given
   example x. Expectation is taken over all examples and locations.
 
-  Equivalent to Omega in https://arxiv.org/abs/1602.01407 for details. See
-  Section 3.1 Estimating the factors.
+  Note that this is related to Omega in https://arxiv.org/abs/1602.01407 except
+  that here we normalize by the number of locations (k). By setting the
+  renormalization coefficient ("_renorm_coeff") in the block class to k we
+  get the same overall block approximation from the paper.
   """
 
   def __init__(self,
@@ -1750,6 +1755,7 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
       self._sub_sample_inputs = _SUB_SAMPLE_INPUTS
     else:
       self._sub_sample_inputs = sub_sample_inputs
+
     if sub_sample_patches is None:
       self._sub_sample_patches = _SUB_SAMPLE_PATCHES
     else:
@@ -1795,12 +1801,22 @@ class ConvInputKroneckerFactor(DenseSquareMatrixFactor):
 
     inputs = self._inputs[tower]
     if self._sub_sample_inputs:
-      batch_size = utils.get_shape(inputs)[0]
-      # computes: int(math.ceil(batch_size * _INPUTS_TO_EXTRACT_PATCHES_FACTOR))
-      new_size = tf.cast(
-          tf.ceil(tf.multiply(tf.cast(batch_size, dtype=tf.float32),
-                              _INPUTS_TO_EXTRACT_PATCHES_FACTOR)),
-          dtype=tf.int32)
+
+      batch_size = inputs.shape.as_list()[0]
+      if batch_size is None:
+        # dynamic case:
+        batch_size = utils.get_shape(inputs)[0]
+        # computes: int(math.ceil(batch_size
+        #                               * _INPUTS_TO_EXTRACT_PATCHES_FACTOR))
+        new_size = tf.cast(
+            tf.ceil(tf.multiply(tf.cast(batch_size, dtype=tf.float32),
+                                _INPUTS_TO_EXTRACT_PATCHES_FACTOR)),
+            dtype=utils.preferred_int_dtype())
+      else:
+        # static case:
+        new_size = int(math.ceil(batch_size
+                                 * _INPUTS_TO_EXTRACT_PATCHES_FACTOR))
+
       inputs = _random_tensor_gather(inputs, new_size)
 
     # TODO(b/64144716): there is potential here for a big savings in terms of

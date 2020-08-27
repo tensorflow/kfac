@@ -46,7 +46,7 @@ def set_global_constants(include_damping_in_qmodel_change=None):
     _INCLUDE_DAMPING_IN_QMODEL_CHANGE = include_damping_in_qmodel_change
 
 
-class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
+class KfacOptimizer(tf.train.GradientDescentOptimizer):
   """The KFAC Optimizer (https://arxiv.org/abs/1503.05671)."""
 
   def __init__(self,
@@ -374,9 +374,9 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
 
       variables = var_list or tf.trainable_variables()
 
-      if tf_replicator is not None:
+      if tf_replicator is not None or tf.distribute.has_strategy():
         def _get_sanitized_name(var_name):
-          return re.sub(r"replica_\d+", "", var_name)
+          return re.sub(r"replica_\d+_", "", var_name)
 
         # This tells K-FAC's libraries that we are using TF-Replicator with this
         # particular Replicator object.
@@ -546,7 +546,7 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
                loss,
                global_step=None,
                var_list=None,
-               gate_gradients=tf.compat.v1.train.Optimizer.GATE_OP,
+               gate_gradients=tf.train.Optimizer.GATE_OP,
                aggregation_method=None,
                colocate_gradients_with_ops=True,
                name=None,
@@ -580,7 +580,7 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
   def compute_gradients(self,
                         loss,
                         var_list=None,
-                        gate_gradients=tf.compat.v1.train.Optimizer.GATE_OP,
+                        gate_gradients=tf.train.Optimizer.GATE_OP,
                         aggregation_method=None,
                         colocate_gradients_with_ops=True,
                         grad_loss=None,
@@ -695,7 +695,7 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
     return maybe_update_damping
 
   def apply_gradients(self, grads_and_vars, *args, **kwargs):
-    """Applies gradients to variables.
+    """Apply updates to variables.
 
     Args:
       grads_and_vars: List of (gradient, variable) pairs.
@@ -747,7 +747,7 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
           with tf.control_dependencies([maybe_print_logging_info]):
             # Update the main counter
             return tf.group(
-                utils.smart_assign(self._counter, self._counter + 1))
+                utils.smart_assign(self._counter, 1, assign_fn=tf.assign_add))
 
   def _add_weight_decay(self, grads_and_vars):
     """Applies weight decay.
@@ -880,7 +880,7 @@ class KfacOptimizer(tf.compat.v1.train.GradientDescentOptimizer):
       raw_updates_and_vars: a list of (precond grad, variable) pairs. Raw update
         proposal to apply to the variables (before scaling by learning rate and
         addition of velocity/momentum).
-      prev_updates_and_vars: a list of (previos update, variable) pairs.
+      prev_updates_and_vars: a list of (previous update, variable) pairs.
         Previous update applied to the variables (includes learning rate and
         velocity/momentum).
       grads_and_vars: a list of (gradient, variable) pairs. Gradients for the

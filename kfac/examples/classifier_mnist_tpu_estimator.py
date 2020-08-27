@@ -46,6 +46,7 @@ flags.DEFINE_integer('iterations_per_loop', 100,
                      'Number of iterations in a TPU training loop.')
 
 flags.DEFINE_string('model_dir', '', 'Model dir.')
+
 flags.DEFINE_string('master', None,
                     'GRPC URL of the master '
                     '(e.g. grpc://ip.address.of.tpu:8470).')
@@ -126,7 +127,6 @@ def _model_fn(features, labels, mode, params):
 
   def loss_fn(minibatch,
               logits=None,
-              layer_collection=None,
               return_error=False):
 
     features, labels = minibatch
@@ -140,50 +140,53 @@ def _model_fn(features, labels, mode, params):
 
     return classifier_mnist.compute_loss(logits=logits,
                                          labels=labels,
-                                         layer_collection=layer_collection,
                                          return_error=return_error)
+
+  logits = training_model(features)
 
   pre_update_batch_loss, pre_update_batch_error = loss_fn(
       (features, labels),
-      layer_collection=layer_collection,
+      logits=logits,
       return_error=True)
 
   global_step = tf.train.get_or_create_global_step()
 
-  layer_collection.auto_register_layers()
-
-  train_op, kfac_optimizer = make_train_op(
-      (features, labels),
-      pre_update_batch_loss,
-      layer_collection,
-      loss_fn)
-
-  tensors_to_print = {
-      'learning_rate': tf.expand_dims(kfac_optimizer.learning_rate, 0),
-      'momentum': tf.expand_dims(kfac_optimizer.momentum, 0),
-      'damping': tf.expand_dims(kfac_optimizer.damping, 0),
-      'global_step': tf.expand_dims(global_step, 0),
-      'loss': tf.expand_dims(pre_update_batch_loss, 0),
-      'error': tf.expand_dims(pre_update_batch_error, 0),
-  }
-
-  if FLAGS.adapt_damping:
-    tensors_to_print['qmodel_change'] = tf.expand_dims(
-        kfac_optimizer.qmodel_change, 0)
-    tensors_to_print['rho'] = tf.expand_dims(kfac_optimizer.rho, 0)
-
   if mode == tf.estimator.ModeKeys.TRAIN:
+    layer_collection.register_softmax_cross_entropy_loss(logits,
+                                                         seed=FLAGS.seed + 1)
+    layer_collection.auto_register_layers()
+
+    train_op, kfac_optimizer = make_train_op(
+        (features, labels),
+        pre_update_batch_loss,
+        layer_collection,
+        loss_fn)
+
+    tensors_to_print = {
+        'learning_rate': tf.expand_dims(kfac_optimizer.learning_rate, 0),
+        'momentum': tf.expand_dims(kfac_optimizer.momentum, 0),
+        'damping': tf.expand_dims(kfac_optimizer.damping, 0),
+        'global_step': tf.expand_dims(global_step, 0),
+        'loss': tf.expand_dims(pre_update_batch_loss, 0),
+        'error': tf.expand_dims(pre_update_batch_error, 0),
+    }
+
+    if FLAGS.adapt_damping:
+      tensors_to_print['qmodel_change'] = tf.expand_dims(
+          kfac_optimizer.qmodel_change, 0)
+      tensors_to_print['rho'] = tf.expand_dims(kfac_optimizer.rho, 0)
+
     return contrib_tpu.TPUEstimatorSpec(
         mode=mode,
         loss=pre_update_batch_loss,
         train_op=train_op,
         host_call=(print_tensors, tensors_to_print),
         eval_metrics=None)
+
   else:  # mode == tf.estimator.ModeKeys.{EVAL, PREDICT}:
     return contrib_tpu.TPUEstimatorSpec(
         mode=mode,
         loss=pre_update_batch_loss,
-        host_call=(print_tensors, tensors_to_print),
         eval_metrics=None)
 
 
