@@ -627,9 +627,10 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                     0)
 
   def _is_just_after_damping_adaptation_time(self):
-    return tf.equal(tf.mod(self.counter,
-                           self._damping_adaptation_interval),
-                    0)
+    is_just_after = tf.equal(
+        tf.mod(self.counter, self._damping_adaptation_interval), 0)
+
+    return tf.logical_and(is_just_after, tf.not_equal(self.counter, 0))
 
   def _maybe_update_prev_loss(self):
     if self._adapt_damping:

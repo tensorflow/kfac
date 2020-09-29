@@ -22,10 +22,9 @@ import collections
 # Dependency imports
 import numpy as np
 import tensorflow.compat.v1 as tf
-from tensorflow.contrib import tpu as contrib_tpu
 
-from tensorflow.contrib.tpu.python.ops import tpu_ops
-from tensorflow.contrib.tpu.python.tpu import tpu_function
+from tensorflow.python.tpu import tpu_function
+from tensorflow.python.tpu.ops import tpu_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.util import nest
 
@@ -615,7 +614,7 @@ def all_sum(structure, name=None):
 
   elif is_tpu_replicated():
     def tpu_all_sum(tensor):
-      return contrib_tpu.cross_replica_sum(tensor, name=name)
+      return tpu_ops.cross_replica_sum(tensor, name=name)
 
     return nest.map_structure(tpu_all_sum, structure)
 

@@ -22,9 +22,14 @@ from __future__ import print_function
 import six
 import tensorflow.compat.v1 as tf
 
-from kfac.python.ops import utils
 from tensorflow.python.ops import resource_variable_ops
-from tensorflow.python.types import core
+from kfac.python.ops import utils
+# pylint: disable=g-import-not-at-top
+try:
+  from tensorflow.python.types import core
+except ModuleNotFoundError:
+  from tensorflow.python.framework import ops as tf_ops
+# pylint: enable=g-import-not-at-top
 
 
 def is_op(node):
@@ -32,8 +37,11 @@ def is_op(node):
 
 
 def is_tensor(node):
-  # TODO(b/154650521): Use tf.Tensor instead of core.Tensor.
-  return isinstance(node, core.Tensor)
+  try:
+    # TODO(b/154650521): Use tf.Tensor instead of core.Tensor.
+    return isinstance(node, core.Tensor)
+  except NameError:
+    return tf_ops.is_dense_tensor_like(node)
 
 
 def is_var(node):
