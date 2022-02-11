@@ -270,8 +270,8 @@ class SavingUtilsTest(tf.test.TestCase):
       self.assertAllClose(out, out2, atol=1e-05)
 
       # Test non-default options in h5
-      with h5py.File('_', driver='core',
-                     backing_store=False) as h5file:
+      with h5py.File(
+          '-', driver='core', mode='w', backing_store=False) as h5file:
         keras.models.save_model(model, h5file)
         loaded_model = saving_utils.load_model(h5file, optimizer_name='new2')
         out2 = loaded_model.predict(x)

@@ -20,9 +20,9 @@ from __future__ import print_function
 
 import json
 from absl import logging
+from tensorflow.python.keras.saving import hdf5_format
 import tensorflow.compat.v1 as tf
 
-from tensorflow.python.keras.saving import hdf5_format
 from kfac.python.keras import optimizers
 
 # This optional h5py import allows users to import all of tensorflow_kfac
@@ -123,11 +123,13 @@ def load_model(filepath, custom_objects=None, optimizer_name=None):
   # github.com/tensorflow/tensorflow/blob/master/tensorflow/python/keras/saving/hdf5_format.py
   try:
     training_config = model_file.attrs.get('training_config')
+    if hasattr(training_config, 'decode'):
+      training_config = training_config.decode('utf-8')
     if training_config is None:
       raise ValueError('No training configuration found in save file, meaning '
                        'the model was not compiled. Please use '
                        'tf.keras.models.load_model instead.')
-    training_config = json.loads(training_config.decode('utf-8'))
+    training_config = json.loads(training_config)
 
     model.compile(**_compile_args_from_training_config(training_config,
                                                        custom_objects))

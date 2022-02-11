@@ -78,7 +78,8 @@ def is_identity(node):
     return False
   # For ResourceVariables, a 'ReadVariableOp' has a single 'Enter' input, which
   # in turn has a Tensor with dtype == resource as input.
-  return node.type in {'Identity', 'ReadVariableOp', 'Enter'}
+  return (node.type in {'Identity', 'ReadVariableOp', 'Enter', 'IdentityN'}
+          or 'convert_gradient_to_tensor' in node.type)
 
 
 def op_type_is(typename):
@@ -91,7 +92,13 @@ def op_type_is(typename):
 
 def reduce_identity_ops(node):
   while is_tensor(node) and is_identity(node.op):
-    assert len(node.op.inputs) == 1, 'identity op should have one input.'
+    # IdentityN is sometimes used when custom gradients are involved. Its
+    # two inputs should be the same in that case. Otherwise there should only
+    # be one input.
+    assert (len(node.op.inputs) == 1
+            or (node.op.type == 'IdentityN'
+                and node.op.inputs[0] == node.op.inputs[1]))
+
     node = node.op.inputs[0]
   return node
 

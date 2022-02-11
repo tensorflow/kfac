@@ -20,10 +20,10 @@ from __future__ import print_function
 
 import json
 from absl.testing import parameterized
+from tensorflow.python.keras import backend
 import numpy as np
 import tensorflow.compat.v1 as tf
 
-from tensorflow.python.keras import backend
 from tensorflow.python.util import serialization
 from kfac.python.keras import optimizers
 from kfac.python.keras import utils
@@ -266,10 +266,10 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
   def testArgsKwargs(self):
     """Test if kwargs are correctly forwarded to tensorflow_kfac."""
     kwargs = {
-        'learning_rate': 3,
-        'damping': 5,
-        'momentum': 7,
-        'min_damping': 9,
+        'learning_rate': 3.0,
+        'damping': 5.0,
+        'momentum': 7.0,
+        'min_damping': 9.0,
         'num_burnin_steps': 11,
         'invert_every': 13,
         'fisher_approx': {
@@ -306,20 +306,20 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
     fisher_approx = {layers.Dense: 'kron_in_diag', 'dense_1': 'kron_both_diag'}
     kwargs = {
         'loss': 'mse',
-        'momentum': 7,
-        'num_burnin_steps': 11,
-        'min_damping': 9,
+        'momentum': 7.0,
+        'num_burnin_steps': 11.0,
+        'min_damping': 9.0,
         'invert_every': 13,
         'fisher_approx': fisher_approx,
         'seed': 12,
     }
     opt = optimizers.Kfac(
-        learning_rate=3, damping=5, model=_simple_mlp(), **kwargs)
-    opt.learning_rate = 23
-    opt.damping = 27
+        learning_rate=3.0, damping=5.0, model=_simple_mlp(), **kwargs)
+    opt.learning_rate = 23.0
+    opt.damping = 27.0
     config = opt.get_config()
-    self.assertEqual(config['learning_rate'], 23)
-    self.assertEqual(config['damping'], 27)
+    self.assertEqual(config['learning_rate'], 23.0)
+    self.assertEqual(config['damping'], 27.0)
     dense_approx = fisher_approx.pop(layers.Dense)
     fisher_approx[utils._CLASS_NAME_PREFIX + 'Dense'] = dense_approx
     for key, val in kwargs.items():
@@ -332,10 +332,10 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
                                   ('_LossFunction', {'loss': losses.MSE}))
   def testFromConfig(self, kwargs_updates):
     kwargs = {
-        'learning_rate': 3,
-        'damping': 5,
-        'momentum': 7,
-        'min_damping': 9,
+        'learning_rate': 3.0,
+        'damping': 5.0,
+        'momentum': 7.0,
+        'min_damping': 9.0,
         'num_burnin_steps': 11,
         'invert_every': 13,
         'fisher_approx': {
@@ -360,7 +360,7 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
   @parameterized.named_parameters(('_Tensor', tf.convert_to_tensor),
                                   ('_Float', float))
   def testGettingHyper(self, hyper_ctor):
-    kwarg_values = {'learning_rate': 3, 'damping': 20, 'momentum': 13}
+    kwarg_values = {'learning_rate': 3.0, 'damping': 20.0, 'momentum': 13.0}
     kwargs = {k: hyper_ctor(v) for k, v in kwarg_values.items()}
     opt = optimizers.Kfac(model=_simple_mlp(), loss='mse', **kwargs)
     get_value = backend.get_value
@@ -384,7 +384,7 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
       backend.get_value(opt.learning_rate)
 
   @parameterized.named_parameters(
-      (('_' + name, name, val+1)
+      (('_' + name, name, float(val+1))
        for val, name in enumerate(optimizers._MUTABLE_HYPER_PARAMS)))
   def testSetTFVariableHyper(self, name, val):
     kwargs = {'learning_rate': 0.01, 'damping': 0.001}
@@ -399,12 +399,12 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
 
     with self.subTest(name='SetError'):
       with self.assertRaisesRegex(ValueError, 'Dynamic reassignment only.*'):
-        setattr(opt, name, tf.convert_to_tensor(2))
+        setattr(opt, name, tf.convert_to_tensor(2.0))
       with self.assertRaisesRegex(ValueError, 'Dynamic reassignment only.*'):
-        setattr(opt, name, tf.Variable(2))
+        setattr(opt, name, tf.Variable(2.0))
 
   @parameterized.named_parameters(
-      (('_' + name, name, val + 1)
+      (('_' + name, name, float(val + 1))
        for val, name in enumerate(optimizers._MUTABLE_HYPER_PARAMS)))
   def testSetFloatHyper(self, name, val):
     kwargs = {'learning_rate': 0.01, 'damping': 0.001}
@@ -419,15 +419,15 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
 
     with self.subTest(name='SetError'):
       with self.assertRaisesRegex(ValueError, 'Dynamic reassignment only.*'):
-        setattr(opt, name, tf.convert_to_tensor(2))
+        setattr(opt, name, tf.convert_to_tensor(2.0))
       with self.assertRaisesRegex(ValueError, 'Dynamic reassignment only.*'):
-        setattr(opt, name, tf.Variable(2))
+        setattr(opt, name, tf.Variable(2.0))
 
   @parameterized.named_parameters(
-      (('_' + name, name, val + 1)
+      (('_' + name, name, float(val + 1))
        for val, name in enumerate(optimizers._MUTABLE_HYPER_PARAMS)))
   def testModifyingTensorHypersFails(self, name, val):
-    kwargs = {'learning_rate': 3, 'damping': 5, 'momentum': 7}
+    kwargs = {'learning_rate': 3.0, 'damping': 5.0, 'momentum': 7.0}
     kwargs[name] = tf.convert_to_tensor(val)
     opt = optimizers.Kfac(model=_simple_mlp(), loss='mse', **kwargs)
     with self.subTest(name='AssignedCorrectly'):
@@ -440,18 +440,18 @@ class KfacOptimizerTest(parameterized.TestCase, tf.test.TestCase):
   def testLRBackwardsCompatibility(self):
     """This tests learning rate getting/setting used by old Keras callbacks."""
     opt = optimizers.Kfac(
-        learning_rate=3, damping=5, model=_simple_mlp(), loss='mse')
-    self.assertEqual(backend.get_value(opt.lr), 3)
-    self.assertEqual(backend.get_value(opt.learning_rate), 3)
-    opt.lr = 7
-    self.assertEqual(backend.get_value(opt.lr), 7)
-    self.assertEqual(backend.get_value(opt.learning_rate), 7)
-    backend.set_value(opt.lr, 9)
-    self.assertEqual(backend.get_value(opt.lr), 9)
-    self.assertEqual(backend.get_value(opt.learning_rate), 9)
-    backend.set_value(opt.learning_rate, 11)
-    self.assertEqual(backend.get_value(opt.lr), 11)
-    self.assertEqual(backend.get_value(opt.learning_rate), 11)
+        learning_rate=3.0, damping=5.0, model=_simple_mlp(), loss='mse')
+    self.assertEqual(backend.get_value(opt.lr), 3.0)
+    self.assertEqual(backend.get_value(opt.learning_rate), 3.0)
+    opt.lr = 7.0
+    self.assertEqual(backend.get_value(opt.lr), 7.0)
+    self.assertEqual(backend.get_value(opt.learning_rate), 7.0)
+    backend.set_value(opt.lr, 9.0)
+    self.assertEqual(backend.get_value(opt.lr), 9.0)
+    self.assertEqual(backend.get_value(opt.learning_rate), 9.0)
+    backend.set_value(opt.learning_rate, 11.0)
+    self.assertEqual(backend.get_value(opt.lr), 11.0)
+    self.assertEqual(backend.get_value(opt.learning_rate), 11.0)
 
   def testMultipleLossTraining(self):
     inp = layers.Input(shape=(28, 28, 1))

@@ -106,8 +106,33 @@ def record_affine_from_bindings(bindings, consumed_tensors,
   if params is not None:
     record_data = dict(inputs=inputs, outputs=outputs)
 
-    if linear_op.type == 'MatMul':
+    is_sparse = (linear_op.type == 'Gather'
+                 or linear_op.type == 'GatherV2'
+                 or linear_op.type == 'ResourceGather')
+
+    if (linear_op.type == 'MatMul' or linear_op.type == 'BatchMatMulV2' or
+        is_sparse):
       record_type = RecordType.fully_connected
+
+      if len(inputs.shape) >= 4 or (is_sparse and len(inputs.shape) >= 3):
+        raise ValueError('K-FAC currently doesn''t support multi-use/temporal '
+                         'fully-connected layers with more than two batch/time '
+                         'dimensions. Two is the max, and they must be in the '
+                         'order [time, batch, ...]. Found this for params {} '
+                         'and op {}.'.format(params, repr(linear_op)))
+
+      if ((linear_op.type == 'MatMul'
+           and (linear_op.get_attr('transpose_a')
+                or linear_op.get_attr('transpose_b'))) or
+          (linear_op.type == 'BatchMatMulV2'
+           and (linear_op.get_attr('adj_x')
+                or linear_op.get_attr('adj_y')))):
+        raise ValueError('K-FAC currently doesn''t support fully-connected '
+                         'layers with transposed inputs or weights as part of '
+                         'the actual op. Found this for params {} and '
+                         'op {}.'.format(params, repr(linear_op)))
+
+      record_data['dense_inputs'] = not is_sparse
 
     elif linear_op.type == 'Conv2D':
       record_type = RecordType.conv2d
@@ -124,7 +149,7 @@ def record_affine_from_bindings(bindings, consumed_tensors,
       record_data['data_format'] = data_format
 
     else:
-      raise ValueError("Can't register operation: {}".format(linear_op))
+      raise ValueError("Can't register operation: {}".format(repr(linear_op)))
 
     return MatchRecord(
         record_type=record_type,
@@ -195,15 +220,23 @@ def record_batch_norm_from_bindings(bindings, consumed_tensors,
     offset = tensors_to_variables.get(bindings['offset'])
   else:
     offset = None
-  scale = tensors_to_variables.get(bindings['scale'], None)
+
+  if 'scale' in bindings:
+    scale = tensors_to_variables.get(bindings['scale'])
+  else:
+    scale = None
 
   inputs = bindings['in']
   outputs = bindings['out']
 
   if scale is not None and offset is not None:
     params = (scale, offset)
-  else:
+  elif scale is not None:
     params = scale
+  elif offset is not None:
+    params = offset
+  else:
+    params = None
 
   if params is not None:
     record_data = dict(inputs=inputs, outputs=outputs)
@@ -338,7 +371,9 @@ def register_subgraph_layers(layer_collection,
                          (gm.matcher_with_consumed(gp.BatchNorm),
                           record_batch_norm_from_bindings),
                          (gm.matcher_with_consumed(gp.FusedBatchNormOutput),
-                          record_batch_norm_from_bindings)]
+                          record_batch_norm_from_bindings),
+                         (gm.matcher_with_consumed(gp.Embed),
+                          record_affine_from_bindings)]
 
   # Patterns return bindings to raw tensors, so we need to be able to map back
   # to variables from the tensors those variables reference.
@@ -587,47 +622,87 @@ def register_records(layer_collection,
       continue
 
     record_type = record_list[0].record_type
-    if batch_size:
-      # If the batch/time dimension is merged in the input then need to set
-      # `num_uses`.
-      first_dim = record_list[0].data['inputs'].shape.as_list()[0]
-      is_batch_time_folded = not (first_dim is None or first_dim == batch_size)
-      if is_batch_time_folded:
-        num_uses = first_dim // batch_size
-        if num_uses == 0:
-          raise ValueError('It looks like the batch_size passed to the auto-'
-                           'registration function was larger than expected. '
-                           'The likely cause of this is that you passed in '
-                           'the overall batch size instead of the per-replica '
-                           'batch size. When using K-FAC with replication all '
-                           'batch sizes passed to K-FAC and its helper modules '
-                           'should be their per-replica sizes.')
 
     if record_type is RecordType.fully_connected:
+
+      dense_inputs = record_list[0].data['dense_inputs']
+      if (not dense_inputs
+          and layer_collection._get_linked_approx(params) is None):  # pylint: disable=protected-access
+        # Nothing is lost by using a diagonal approx for the input factor here.
+        # This is because the 2nd-moment matrix for 1-hot vectors will be
+        # naturally diagonal.
+        approx = 'kron_indep_in_diag'
+      else:
+        approx = None
+
       if len(record_list) > 1:
         logging.info(
-            'Registering as multi fully-connected: {}'.format(params))
+            'Registering as multi-use fully-connected: {}'.format(params))
 
         inputs = tuple(record.data['inputs'] for record in record_list)
         outputs = tuple(record.data['outputs'] for record in record_list)
         layer_collection.register_fully_connected_multi(
-            params, inputs, outputs, reuse=reuse)
+            params, inputs, outputs, reuse=reuse, dense_inputs=dense_inputs,
+            approx=approx)
       else:
-        logging.info('Registering as fully-connected: {}'.format(params))
+        if dense_inputs:
+          folded_dim_limit = 2
+        else:
+          folded_dim_limit = 1
 
         record = record_list[0]
         inputs = record.data['inputs']
         outputs = record.data['outputs']
-        if batch_size and is_batch_time_folded:
+
+        first_dim = inputs.shape.as_list()[0]
+        num_dim = len(inputs.shape)
+
+        is_batch_time_folded = not (
+            batch_size is None
+            or first_dim is None
+            or first_dim == batch_size
+            or num_dim > folded_dim_limit)
+
+        if is_batch_time_folded or num_dim > folded_dim_limit:
+          logging.info(
+              'Registering as multi-use fully-connected: {}'.format(params))
+
+          logging.warning('Registering {} as multi-use fully-connected layer '
+                          'with folded batch and time/use dimension. If using '
+                          'the non-independent K-FAC RNNs approximations ('
+                          '"Option 1" or "Option 2") make sure that the '
+                          'dimensions are ordered [time/use, batch] before '
+                          'folding, and not the other way around. Otherwise '
+                          'you will get a silent failure of the method!'
+                          ''.format(params))
+
+          if is_batch_time_folded:
+            if first_dim % batch_size != 0:
+              raise ValueError('Passed batch_size did not divide first '
+                               'dimension of tensor with presumed folded '
+                               'batch and use/times dimension. Possible causes '
+                               'include passing the wrong batch size (e.g. '
+                               'passing overall instead of per-replica), or a '
+                               'non-standard layer (possibly with no batch '
+                               'dependency). Layer params are: '
+                               '{}. Input and output tensors are: {} and {}'
+                               ''.format(params, inputs, outputs))
+            num_uses = first_dim // batch_size
+          else:
+            num_uses = record_list[0].data['inputs'].shape.as_list()[1]
+
           layer_collection.register_fully_connected_multi(
-              params, inputs, outputs, num_uses=num_uses, reuse=reuse)
+              params, inputs, outputs, num_uses=num_uses, reuse=reuse,
+              dense_inputs=dense_inputs, approx=approx)
         else:
+          logging.info('Registering as fully-connected: {}'.format(params))
           layer_collection.register_fully_connected(
-              params, inputs, outputs, reuse=reuse)
+              params, inputs, outputs, reuse=reuse, dense_inputs=dense_inputs,
+              approx=approx)
 
     elif record_type is RecordType.conv2d:
       if len(record_list) > 1:
-        logging.info('Registering as multi conv2d: {}'.format(params))
+        logging.info('Registering as multi-use conv2d: {}'.format(params))
 
         inputs = tuple(record.data['inputs'] for record in record_list)
         outputs = tuple(record.data['outputs'] for record in record_list)
@@ -643,15 +718,41 @@ def register_records(layer_collection,
             data_format=data_format,
             reuse=reuse)
       else:
-        logging.info('Registering as conv2d: {}'.format(params))
-
         record = record_list[0]
         inputs = record.data['inputs']
         outputs = record.data['outputs']
         strides = record.data['strides']
         padding = record.data['padding']
         data_format = record.data['data_format']
-        if batch_size and is_batch_time_folded:
+
+        first_dim = inputs.shape.as_list()[0]
+        num_dim = len(inputs.shape)
+
+        is_batch_time_folded = not (
+            batch_size is None
+            or first_dim is None
+            or first_dim == batch_size
+            or num_dim > 4)
+
+        if is_batch_time_folded or num_dim > 4:
+          logging.info('Registering as multi-use conv2d: {}'.format(params))
+
+          if is_batch_time_folded:
+            if first_dim % batch_size != 0:
+              raise ValueError('Passed batch_size did not divide first '
+                               'dimension of tensor with presumed folded '
+                               'batch and use/times dimension. Possible causes '
+                               'include passing the wrong batch size (e.g. '
+                               'passing overall instead of per-replica), or a '
+                               'non-standard layer (possibly with no batch '
+                               'dependency). Layer params are: '
+                               '{}. Input and output tensors are: {} and {}'
+                               ''.format(params, inputs, outputs))
+            num_uses = first_dim // batch_size
+          else:
+            raise ValueError('Currently not supporting conv layers with '
+                             'separate time/uses dim.')
+
           layer_collection.register_conv2d_multi(
               params,
               strides,
@@ -662,6 +763,7 @@ def register_records(layer_collection,
               num_uses=num_uses,
               reuse=reuse)
         else:
+          logging.info('Registering as conv2d: {}'.format(params))
           layer_collection.register_conv2d(params, strides, padding, inputs,
                                            outputs, data_format=data_format,
                                            reuse=reuse)
@@ -680,7 +782,12 @@ def register_records(layer_collection,
                                                 reuse=reuse)
 
     elif record_type is RecordType.batch_norm:
-      logging.info('Registering as batch norm: {}'.format(params))
+      # For now we register this as generic instead of scale_and_shift because
+      # the fused version of batch norm won't give us the quantities we need
+      # for the latter. Could consider splitting this into fused and non-fused
+      # cases.
+
+      logging.info('Registering as generic (batch norm): {}'.format(params))
 
       if batch_size is None:
         raise AmbiguousRegistrationError(
@@ -697,8 +804,8 @@ def register_records(layer_collection,
               and layer_collection._get_linked_approx(params) is None)  # pylint: disable=protected-access
           )
       if will_use_diag:
-        layer_collection.register_generic(params[0], batch_size, reuse=reuse)
-        layer_collection.register_generic(params[1], batch_size, reuse=reuse)
+        for param in ensure_sequence(params):
+          layer_collection.register_generic(param, batch_size, reuse=reuse)
       else:
         layer_collection.register_generic(params, batch_size, reuse=reuse)
 

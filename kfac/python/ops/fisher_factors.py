@@ -65,8 +65,7 @@ ASSUME_ZERO_MEAN_ACTIVATIONS = False
 # mean subtraction from covariance matrix. Note this flag is only checked in the
 # case where ASSUME_ZERO_MEAN_ACTIVATIONS is set to True. If
 # ASSUME_ZERO_MEAN_ACTIVATIONS is False then mean is always subtracted from the
-# covaraince matrix and this flag is redundant.
-
+# covariance matrix and this flag is redundant.
 SUBTRACT_MEAN_CONTRIB_FROM_COV = True
 
 # Subsample the inputs passed to the extract image patches. The number of
@@ -1183,17 +1182,22 @@ class DiagonalKroneckerFactor(DiagonalFactor):
     return utils.get_shape(self._tensors[source][tower])[0]
 
   def _compute_new_cov(self, source, tower):
-    tensor = self._tensors[source][tower]
+    return self._compute_new_cov_from_tensor(self._tensors[source][tower])
 
-    if len(tensor.shape) > 2:
-      raise ValueError(
-          "Input tensors to DiagonalKroneckerFactor must have rank <= 2. "
-          "Found tensor with wrong rank: {}".format(tensor))
+  def _compute_new_cov_from_tensor(self, tensor):
     batch_size = utils.get_shape(tensor)[0]
 
     if self._dense_input:
+      if len(tensor.shape) != 2:
+        raise ValueError(
+            "Dense input tensors to DiagonalKroneckerFactor must have "
+            "rank == 2. Found tensor with wrong rank: {}".format(tensor))
       new_cov = tf.square(tensor)
     else:
+      if len(tensor.shape) != 1:
+        raise ValueError(
+            "Sparse input tensors to DiagonalKroneckerFactor must have "
+            "rank == 1. Found tensor with wrong rank: {}".format(tensor))
       # Transform indices into one-hot vectors.
       #
       # TODO(b/72714822): There must be a faster way to construct the diagonal
@@ -1235,9 +1239,42 @@ class DiagonalMultiKF(DiagonalKroneckerFactor):
     # class won't actually be the proper batch size. Instead, they will be
     # just "the thing to normalize the statistics by", essentially. This is okay
     # as we don't mix the two things up.
-    return (super(DiagonalMultiKF, self)._partial_batch_size(source=source,
-                                                             tower=tower)
-            // self._num_uses)
+    shape = utils.get_shape(self._tensors[source][tower])
+    if self._dense_input:
+      if len(shape) == 2:
+        # the folded case
+        return shape[0] // self._num_uses
+      elif len(shape) == 3:
+        return shape[1]  # batch is the second dim
+    else:
+      if len(shape) == 1:
+        # the folded case
+        return shape[0] // self._num_uses
+      elif len(shape) == 2:
+        return shape[1]  # batch is the second dim
+
+  @property
+  def _cov_shape(self):
+    if self._dense_input:
+      shape = self._tensors[0][0].shape
+      if len(shape) == 2:
+        size = shape[1] + self._has_bias
+      elif len(shape) == 3:
+        size = shape[2] + self._has_bias
+    else:
+      size = self._one_hot_depth + self._has_bias
+    return [size]
+
+  def _compute_new_cov(self, source, tower):
+    tensor = self._tensors[source][tower]
+    if self._dense_input:
+      if len(tensor.shape) == 3:
+        tensor = tf.reshape(tensor, [-1, tensor.shape[2]])
+    else:
+      if len(tensor.shape) == 2:
+        tensor = tf.reshape(tensor, [-1])
+
+    return self._compute_new_cov_from_tensor(tensor)
 
 
 class FullyConnectedDiagonalFactor(DiagonalFactor):
@@ -1653,6 +1690,14 @@ class FullyConnectedKroneckerFactor(DenseSquareMatrixFactor):
     # output pre-activation gradients.
     self._has_bias = has_bias
     self._tensors = tensors
+
+    self._one_hot_depth = getattr(self._tensors[0][0], "one_hot_depth", None)
+    if self._one_hot_depth is not None:
+      raise ValueError("Dense factors currently don't support 1-hot sparse "
+                       "data. Note that for input factors with such data, "
+                       "a diagonal approximation is exact (but the same is "
+                       "NOT true for output factors).")
+
     super(FullyConnectedKroneckerFactor, self).__init__()
 
   @property
@@ -2486,8 +2531,12 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     return self._num_uses
 
   def _partial_batch_size(self, source=0, tower=0):
-    total_len = utils.get_shape(self._tensors[source][tower])[0]
-    return total_len // self._num_timesteps
+    shape = utils.get_shape(self._tensors[source][tower])
+    if len(shape) == 2:
+      # the folded case
+      return shape[0] // self._num_timesteps
+    elif len(shape) == 3:
+      return shape[1]  # batch is the second dim
 
   @property
   def _var_scope(self):
@@ -2530,8 +2579,20 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
 
     return op
 
+  def _compute_new_cov(self, source, tower):
+    tensor = self._tensors[source][tower]
+    if len(tensor.shape) == 3:
+      tensor = tf.reshape(tensor, [-1, tensor.shape[2]])
+
+    if self._has_bias:
+      tensor = append_homog(tensor)
+    return compute_cov(tensor)
+
   def _compute_new_cov_dt1(self, source, tower):  # pylint: disable=missing-docstring
     tensor = self._tensors[source][tower]
+    if len(tensor.shape) == 3:
+      tensor = tf.reshape(tensor, [-1, tensor.shape[2]])
+
     if self._has_bias:
       # This appending is technically done twice (the other time is for
       # _compute_new_cov())
@@ -2548,6 +2609,15 @@ class FullyConnectedMultiKF(FullyConnectedKroneckerFactor):
     # in Section B.2 of the appendix.
     return compute_cov(
         tensor_future, tensor_right=tensor_present, normalizer=total_len)
+
+  @property
+  def _cov_shape(self):
+    shape = self._tensors[0][0].shape
+    if len(shape) == 2:
+      size = shape[1] + self._has_bias
+    elif len(shape) == 3:
+      size = shape[2] + self._has_bias
+    return [size, size]
 
   def _get_data_device(self, tower):
     return self._tensors[0][tower].device

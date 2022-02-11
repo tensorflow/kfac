@@ -1,10 +1,8 @@
 # K-FAC for Keras
 
 **K-FAC for Keras** is an implementation of K-FAC, an approximate second-order
-optimization method, in TensorFlow. When applied to feedforward and
-convolutional neural networks, K-FAC can converge much faster (`>3.5x`) and with
-fewer iterations (`>14x`) than SGD with Momentum. You can read more about it in
-the paper [here][paper] and the GitHub docs [here][index].
+optimization method, in TensorFlow. You can read more about it in the paper
+[here][paper] and the GitHub docs [here][index].
 
 [index]: https://github.com/tensorflow/kfac/tree/master/docs/index.md
 [paper]: https://arxiv.org/abs/1503.05671

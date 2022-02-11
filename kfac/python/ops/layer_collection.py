@@ -1216,17 +1216,19 @@ class LayerCollection(object):
       inputs: A list of Tensors or a single Tensor. Inputs to this layer. If a
         list of Tensors, the list indexes each use in the model (which might
         correspond to a "time-step" in an RNN). Each Tensor in the list has
-        leading dimension batch_size. If a single Tensor, the leading dimension
-        would be num_uses * batch_size, which is a reshaped version of the list
-        of Tensors. Similar to register_fully_connected(), two formats of
-        tensors are accepted: dense inputs and sparse inputs. In most cases
-        the Tensors are dense inputs, with shape [batch_size, input_size] (if a
-        list) or [num_uses * batch_size , input_size] (if a single Tensor).
-        In some cases the Tensors are sparse inputs, with shape [batch_size] (if
-        a list) or [num_uses * batch_size] (if a single Tensor). A typical
-        example of sparse inputs is the vocab indices into an embedding matrix.
-        Sparse inputs will be converted to the dense format within KFAC. For
-        sparse inputs, dense_inputs should be set to False.
+        leading dimension batch_size. If a single Tensor, should have shape
+        [num_uses, batch_size, input_size] or be a reshape of such a tensor
+        to shape [num_uses, batch_size, input_size]. Similar to
+        register_fully_connected(), two formats of tensors are accepted: dense
+        inputs and sparse inputs. In most cases the Tensors are dense inputs,
+        with shape [batch_size, input_size] (if a list) or
+        [num_uses, batch_size, input_size] (if a single Tensor) or
+        [num_uses * batch_size, input_size] (if a single Tensor). In some cases
+        the Tensors are sparse inputs, with shape [batch_size] (if a list) or
+        or [num_uses, batch_size] (if a single Tensor) or
+        [num_uses * batch_size] (if a single Tensor). A typical example of
+        sparse inputs is the vocab indices into an embedding matrix. For sparse
+        inputs, the argument 'dense_inputs' should be set to False.
       outputs: A list of Tensors, the same length as 'inputs', each of shape
         [batch_size, output_size]. Outputs produced by layer. The list indexes
         each use in the model (which might correspond to a "time-step" in an

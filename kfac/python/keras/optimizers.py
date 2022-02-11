@@ -22,11 +22,11 @@ import inspect
 import numbers
 import re
 from absl import logging
+from tensorflow.python.keras import backend
 import six
 import tensorflow.compat.v1 as tf
 
 
-from tensorflow.python.keras import backend
 from kfac.python.keras import utils
 from kfac.python.ops import optimizer
 from kfac.python.ops.kfac_utils import periodic_inv_cov_update_kfac_opt

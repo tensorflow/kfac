@@ -3,9 +3,10 @@
 Kronecker factored approximate curvature
 
 **K-FAC in TensorFlow** is an implementation of K-FAC, an approximate
-second-order optimization method, in TensorFlow. When applied to feedforward and
-convolutional neural networks, K-FAC can converge much faster (`>3.5x`) and with
-fewer iterations (`>14x`) than SGD with Momentum.
+second-order optimization method, in TensorFlow. K-FAC can converge much
+faster than SGD or Adam on certain neural network architectures (especially when
+using larger batch sizes), but may be closer in performance on other
+architectures (such as ResNets).
 
 ## Table of Contents
 

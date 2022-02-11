@@ -119,7 +119,8 @@ def Affine(in_pattern=Tensor('in'),
            biases_name='biases',
            output_name='pre_activations'):
   """Pattern constructor for matching affine operation subgraphs."""
-  linear_pat = (('?:choice', Conv2D(linear_op_name), MatMul(linear_op_name)),
+  linear_pat = (('?:choice', Conv2D(linear_op_name), MatMul(linear_op_name),
+                 BatchMatMulV2(linear_op_name)),
                 ('In', in_pattern, Variable(weights_name)))
   affine_pat_r = (('?:choice', Add, BiasAdd, AddV2),
                   ('In', (Tensor, ('In', linear_pat)), Variable(biases_name)))
@@ -129,12 +130,30 @@ def Affine(in_pattern=Tensor('in'),
   return (Tensor(output_name), ('In', ('?:choice', affine_pat, linear_pat)))
 
 
+def Embed(in_pattern=Tensor('in'),
+          linear_op_name='linear_op',
+          weights_name='weights',
+          axis_name='axis',
+          output_name='pre_activations'):
+  """Pattern constructor for matching embedding layer subgraphs."""
+  embed_v1 = (('?:choice', Gather(linear_op_name),
+               ResourceGather(linear_op_name)),
+              ('In', Variable(weights_name), in_pattern))
+  embed_v2 = (GatherV2(linear_op_name),
+              ('In', Variable(weights_name), in_pattern, Tensor(axis_name)))
+  embed = ('?:choice', embed_v1, embed_v2)
+
+  return (Tensor(output_name), ('In', embed))
+
+
+# Only used in tests:
 def Layer(in_pattern=Tensor('in'), **kwargs):
   """Pattern constructor for matching a basic layer."""
   return (Tensor('activations'), ('In', (Nonlinearity, ('In', Affine(
       in_pattern, **kwargs)))))
 
 
+# Only used in tests:
 def LayerWithBatchNorm(in_pattern=Tensor('in')):
   """Pattern constructor for matching a layer with batch normalization."""
   return (Tensor('final_activations'),

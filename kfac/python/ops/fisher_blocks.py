@@ -96,14 +96,20 @@ def compute_pi_tracenorm(left_cov, right_cov):
   # other norm. This works out the same in the ratio.
   left_norm = left_cov.trace() * int(right_cov.domain_dimension)
   right_norm = right_cov.trace() * int(left_cov.domain_dimension)
-  assert_positive = tf.assert_positive(
-      right_norm,
-      message="PI computation, trace of right cov matrix should be positive. "
-      "Note that most likely cause of this error is that the optimizer "
-      "diverged (e.g. due to bad hyperparameters).")
-  with tf.control_dependencies([assert_positive]):
-    pi = tf.sqrt(left_norm / right_norm)
-  return pi
+
+  def normal_case():
+    assert_positive = tf.assert_positive(
+        right_norm,
+        message="PI computation, trace of right cov matrix should be positive. "
+        "Note that most likely cause of this error is that the optimizer "
+        "diverged (e.g. due to bad hyperparameters).")
+    with tf.control_dependencies([assert_positive]):
+      return tf.sqrt(left_norm / right_norm)
+
+  def zero_case():
+    return tf.constant(1.0, dtype=left_norm.dtype)
+
+  return tf.cond(tf.equal(left_norm * right_norm, 0.0), zero_case, normal_case)
 
 
 def compute_pi_adjusted_damping(left_cov, right_cov, damping):
@@ -1341,10 +1347,11 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
     over sources of such lists of lists.
 
     The second possible data format is where self._inputs is a list of Tensors
-    (over towers), where each Tensor has uses/times-steps folded into the batch
-    dimension. i.e. they are Tensors of shape [num_uses * batch_size, ...],
-    which represent reshapes of a Tensor of shape [num_uses, batch_size, ...].
-    And similarly grads_list is a list over sources of such lists of Tensors.
+    (over towers), where each tensor either has shape
+    [num_uses, batch_size, ...] or each tensor has shape
+    [num_uses*batch_size, ...] (which is formed by reshaping tensors of the
+    first format). And similarly grads_list is a list over sources of such lists
+    of Tensors.
 
     There are two possible formats which inputs and grads_list are transformed
     into.
@@ -1352,16 +1359,14 @@ class InputOutputMultiTowerMultiUse(InputOutputMultiTower):
     If TOWER_STRATEGY is "concat", 'inputs' becomes a tuple containing
     a single tensor (represented as a PartitionedTensor object) with all of
     the data from the towers, as well as the uses/time-steps, concatenated
-    together. In this tensor the leading dimension is the batch and
-    use/time-step dimensions folded together (with 'use' being the major of
-    these two, so that the tensors can be thought of as reshapes of ones of
-    shape [num_uses, batch_size, ...]). grads_list is similarly formatted as a
-    tuple over sources of such tensors.
+    together. The format of this tensor is the same as the second input data
+    format above. Similarly, grads_list is a tuple over sources of such
+    lists of tensors.
 
     If TOWER_STRATEGY is "separate" the inputs are formatted into lists of
     tensors over towers. Each of these tensors has a similar format to
     the tensor produced by the "concat" option, except that each contains
-    only the data from a single tower.  grads_list is similarly formatted
+    only the data from a single tower. grads_list is similarly formatted
     into a tuple over sources of such tuples.
 
     Args:

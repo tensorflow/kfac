@@ -579,7 +579,7 @@ class CategoricalLogitsNegativeLogProbLoss(DistributionNegativeLogProbLoss,
     Args:
       logits: Tensor of shape [batch_size, output_size]. Parameters for
         underlying distribution.
-      targets: None or Tensor of shape [output_size]. Each elements contains an
+      targets: None or Tensor of shape [batch_size]. Each elements contains an
         index in [0, output_size).
       seed: int or None. Default random seed when sampling.
     """

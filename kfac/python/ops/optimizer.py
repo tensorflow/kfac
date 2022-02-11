@@ -77,6 +77,9 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
                l2_reg=0.0,
                damping_adaptation_decay=0.95,
                damping_adaptation_interval=5,
+               damping_decrease_rho_threshold=0.75,
+               damping_increase_rho_threshold=0.25,
+               precon_damping_mult=1.0,
                use_passed_loss=True,
                train_batch=None,
                print_logs=False,
@@ -235,15 +238,24 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           _INCLUDE_DAMPING_IN_QMODEL_CHANGE is False. Note that the user is
           still responsible for adding regularization to the loss.
           (Default: 0.0)
-      damping_adaptation_decay: `float`, The `damping` parameter is
+      damping_adaptation_decay: `float`. The `damping` parameter is
           multiplied by the `damping_adaptation_decay` every
           `damping_adaptation_interval` number of iterations. (Default: 0.99)
-      damping_adaptation_interval: `int`, Number of steps in between
+      damping_adaptation_interval: `int`. Number of steps in between
           updating the `damping` parameter. Note that damping is adapted at
           the step where (step+1) % damping_adaptation_interval == 0,
           (or immediately at the start of the next step by
           maybe_pre_update_adapt_damping() if update_damping_immediately is
           False). (Default: 5)
+      damping_decrease_rho_threshold: `int`. The threshold for rho above which
+          we decrease the damping when using automatic damping adaptation.
+          (Default: 0.75)
+      damping_increase_rho_threshold: `int`. The threshold for rho below which
+          we increase the damping when using automatic damping adaptation.
+          (Default: 0.25)
+      precon_damping_mult: `float`. A multiplier used on the damping value
+          passed to the preconditioner (vs the quadratic model when using
+          momentum_type 'qmodel'). (Default: 1.0)
       use_passed_loss: `Boolean`. If True we use the loss tensor passed in by
           the user (via minimze() or compute_gradients() or the set_loss()
           method) in damping adaptation scheme, instead of calling loss_fn()
@@ -273,6 +285,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           or 'adam'.
     """
     dtype = tf.dtypes.as_dtype(dtype)
+    self._dtype = dtype
 
     self._layers = layer_collection
 
@@ -306,8 +319,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     if self._adapt_damping:
       with tf.variable_scope(name):
         self._damping = tf.get_variable(
-            "damping", initializer=damping, trainable=False,
-            use_resource=True)
+            "damping", initializer=lambda: tf.constant(damping, dtype=dtype),
+            trainable=False, use_resource=True, dtype=dtype)
     else:
       self._damping = damping
 
@@ -325,11 +338,16 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     if not use_passed_loss and train_batch is None:
       raise ValueError("Must pass in train_batch if used_passed_loss is false.")
 
+    self._damping_decrease_rho_threshold = damping_decrease_rho_threshold
+    self._damping_increase_rho_threshold = damping_increase_rho_threshold
+
     self._train_batch = train_batch
 
     self._print_logs = print_logs
 
     self._l2_reg = l2_reg
+
+    self._precon_damping_mult = precon_damping_mult
 
     if self._momentum_type.startswith("qmodel"):
       if learning_rate is not None:
@@ -390,7 +408,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
           placement_strategy=placement_strategy,
           variables=variables,
           cov_ema_decay=cov_ema_decay,
-          damping=self._damping,
+          damping=self._damping * self._precon_damping_mult,
           layer_collection=self.layers,
           exps=(-1,),
           estimation_mode=estimation_mode,
@@ -869,7 +887,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
   def _compute_qmodel(self,
                       raw_updates_and_vars,
                       prev_updates_and_vars,
-                      grads_and_vars):
+                      grads_and_vars,
+                      should_average_over_replicas=True):
     """Computes the 2 dimensional version of the (exact) quadratic model.
 
        The two dimesions are the update and the previous update vectors.
@@ -888,6 +907,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
         parameters and the variables that the updates are being applied to. The
         order of this list must correspond to the order of the other arguments.
         (Note that this function doesn't actually apply the update.)
+      should_average_over_replicas: a bool. If true, results will be averged
+        over replicas (using utils.all_average). (Default: True)
 
     Returns:
       m, c, and b. m is the 2 by 2 matrix representing the quadratic term,
@@ -941,7 +962,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     m = [[m_11 + b_11, m_21 + b_21],
          [m_21 + b_21, m_22 + b_22]]
 
-    m = utils.all_average(m)
+    if should_average_over_replicas:
+      m = utils.all_average(m)
 
     c_1 = ip(grads, raw_updates)
     c_2 = ip(grads, prev_updates)
@@ -1299,7 +1321,7 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
     return utils.all_average(self._loss_fn(self._prev_train_batch))
 
   def _get_prev_loss(self):
-    return self._prev_loss
+    return tf.identity(self._prev_loss)
 
   def _update_damping(self):
     """Adapts damping parameter. Check KFAC paper (Section 6.5) for the details.
@@ -1328,8 +1350,8 @@ class KfacOptimizer(tf.train.GradientDescentOptimizer):
 
     should_decrease = tf.math.logical_or(
         tf.math.logical_and(loss_change < 0, self._qmodel_change > 0),
-        rho > 0.75)
-    should_increase = rho < 0.25
+        rho > self._damping_decrease_rho_threshold)
+    should_increase = rho < self._damping_increase_rho_threshold
 
     new_damping = tf.case(
         [(should_decrease, lambda: self.damping * self._omega),

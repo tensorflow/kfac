@@ -175,7 +175,8 @@ class GraphSearchTestCase(tf.test.TestCase):
   def test_register_records_order(self):
     """Ensure records are always registered in the same order."""
     with tf.Graph().as_default():
-      data = {'inputs': tf.zeros([10, 4]), 'outputs': tf.zeros([10, 3])}
+      data = {'inputs': tf.zeros([10, 4]), 'outputs': tf.zeros([10, 3]),
+              'dense_inputs': True}
       params1 = tf.get_variable('w1', [4, 3])
       record1 = gs.MatchRecord(
           gs.RecordType.fully_connected, params1, set(), data=data)
@@ -425,7 +426,8 @@ class GraphSearchTestCase(tf.test.TestCase):
       layer_collection_manual = lc.LayerCollection()
       layer_collection_auto = lc.LayerCollection()
 
-      a = tf.zeros([tf.shape(x_unstack[0])[0], n_hidden], dtype=dtype)
+      a = tf.zeros(tf.convert_to_tensor([tf.shape(x_unstack[0])[0], n_hidden]),
+                   dtype=dtype)
 
       # Here 'a' are the activations, 's' the pre-activations.
       a_list = [a]

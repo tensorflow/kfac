@@ -857,8 +857,3 @@ def train_mnist_estimator(num_epochs, use_fake_data=False):
   # TPU compatibility.
   estimator = tf.estimator.Estimator(model_fn=model_fn, config=run_config)
   estimator.train(input_fn=input_fn)
-
-
-if __name__ == "__main__":
-  tf.disable_v2_behavior()
-  tf.app.run()

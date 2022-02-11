@@ -614,9 +614,12 @@ class FisherEstimator(object):
     """Constructs a covariance update thunk for a single FisherFactor."""
 
     def thunk(should_decay=True):
-      ema_decay = tf.cond(tf.convert_to_tensor(should_decay),
-                          lambda: self._cov_ema_decay,
-                          lambda: 1.0)
+      if isinstance(should_decay, bool):
+        ema_decay = self._cov_ema_decay if should_decay else 1.0
+      else:
+        ema_decay = tf.cond(should_decay,
+                            lambda: self._cov_ema_decay,
+                            lambda: 1.0)
       ema_weight = 1.0
 
       with tf.variable_scope(scope):

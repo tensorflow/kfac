@@ -19,7 +19,7 @@ from setuptools import setup
 
 setup(
     name='kfac',
-    version='0.2.3',
+    version='0.2.4',
     description='K-FAC for TensorFlow',
     author='Google Inc.',
     author_email='no-reply@google.com',
@@ -33,11 +33,15 @@ setup(
         'numpy',
         'six',
         'tensorflow-probability==0.8',
+        'h5py<3',
     ],
     extras_require={
+        # It's possible that you might need to put tensorflow<2.0 here:
         'tensorflow': ['tensorflow>=1.14'],
+        # It's possible that you might need to put tensorflow-gpu<2.0 here:
         'tensorflow_gpu': ['tensorflow-gpu>=1.14'],
-        'tests': ['pytest', 'dm-sonnet<2.0'],
+        # dm-sonnet<2.0 will force tensorflow<2.0 in the tests:
+        'tests': ['pytest', 'dm-sonnet<2.0', 'numpy<1.20'],
     },
     classifiers=[
         'Development Status :: 4 - Beta',

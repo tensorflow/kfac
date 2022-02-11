@@ -1309,9 +1309,8 @@ class MovingAverageVariable(object):
       weight: float or 0D Tensor. The value being added is multiplied by this.
         Also this is added to the total accumulated weight. (Default: 1.0)
     """
-
-    decay = tf.convert_to_tensor(decay, dtype=self.dtype)
-    weight = tf.convert_to_tensor(weight, dtype=self.dtype)
+    decay = tf.cast(decay, dtype=self.dtype)
+    weight = tf.cast(weight, dtype=self.dtype)
 
     update_var = smart_assign(self._var, decay * self._var + weight * value)
 
@@ -1319,6 +1318,12 @@ class MovingAverageVariable(object):
                                        decay * self._total_weight + weight)
 
     return tf.group(update_var, update_total_weight)
+
+  def reset(self):
+    return tf.group(
+        smart_assign(self._var, tf.zeros_like(self._var)),
+        smart_assign(self._total_weight, tf.zeros_like(self._total_weight))
+        )
 
 
 def num_conv_locations(input_shape, filter_shape, strides, padding):
